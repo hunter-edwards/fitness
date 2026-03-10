@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval,
   isSameMonth, isSameDay, addMonths, subMonths, startOfWeek, endOfWeek,
@@ -23,14 +23,15 @@ interface DayData {
 
 export default function CalendarPage() {
   const { user } = useAuth()
-  const supabase = createClient()
+  const supabaseRef = useRef(createClient())
   const [currentMonth, setCurrentMonth] = useState(new Date())
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [dayMap, setDayMap] = useState<Record<string, DayData>>({})
   const [loading, setLoading] = useState(true)
 
-  const monthStart = startOfMonth(currentMonth)
-  const monthEnd = endOfMonth(currentMonth)
+  const monthKey = format(currentMonth, "yyyy-MM")
+  const monthStart = useMemo(() => startOfMonth(currentMonth), [monthKey])
+  const monthEnd = useMemo(() => endOfMonth(currentMonth), [monthKey])
   const calStart = startOfWeek(monthStart)
   const calEnd = endOfWeek(monthEnd)
   const days = eachDayOfInterval({ start: calStart, end: calEnd })
@@ -39,6 +40,7 @@ export default function CalendarPage() {
     if (!user) return
     setLoading(true)
 
+    const supabase = supabaseRef.current
     const from = format(monthStart, "yyyy-MM-dd")
     const to = format(monthEnd, "yyyy-MM-dd")
 
@@ -68,18 +70,18 @@ export default function CalendarPage() {
         if (!map[date]) map[date] = { workouts: [], hasNutrition: false, hasWeight: false }
       }
 
-      ;(workoutsRes.data || []).forEach((w) => {
+      ;(workoutsRes.data || []).forEach((w: { date: string; name: string | null; status: string }) => {
         initDay(w.date)
         map[w.date].workouts.push({ name: w.name, status: w.status })
       })
 
-      const nutritionDates = new Set((mealsRes.data || []).map((m) => m.date))
+      const nutritionDates = new Set((mealsRes.data || []).map((m: { date: string }) => m.date))
       nutritionDates.forEach((d) => {
         initDay(d)
         map[d].hasNutrition = true
       })
 
-      const weightDates = new Set((weightRes.data || []).map((w) => w.date))
+      const weightDates = new Set((weightRes.data || []).map((w: { date: string }) => w.date))
       weightDates.forEach((d) => {
         initDay(d)
         map[d].hasWeight = true
@@ -88,7 +90,7 @@ export default function CalendarPage() {
       setDayMap(map)
       setLoading(false)
     })
-  }, [user, supabase, currentMonth, monthStart, monthEnd])
+  }, [user, monthKey])
 
   const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
   const selectedData = selectedKey ? dayMap[selectedKey] : null

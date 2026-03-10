@@ -1,9 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { format } from "date-fns"
+import { format, addWeeks, nextDay, startOfWeek, addDays } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/hooks/use-auth"
 import { Header } from "@/components/layout/header"
@@ -12,20 +12,25 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { toast } from "sonner"
 import {
   ChevronDown,
   ChevronUp,
   Dumbbell,
-  Clock,
   Timer,
   Trash2,
   Calendar,
   Play,
   ArrowLeft,
+  CalendarPlus,
+  Loader2,
 } from "lucide-react"
 
 interface PlanExercise {
   id: string
+  exercise_id: string | null
   exercise_name: string
   sets: number | null
   reps: string | null
@@ -62,25 +67,27 @@ interface Plan {
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-const DAY_SHORTS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 export default function PlanDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { user } = useAuth()
   const router = useRouter()
-  const supabase = createClient()
+  const supabaseRef = useRef(createClient())
 
   const [plan, setPlan] = useState<Plan | null>(null)
   const [weeks, setWeeks] = useState<PlanWeek[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([0]))
   const [deleting, setDeleting] = useState(false)
+  const [scheduling, setScheduling] = useState(false)
+  const [showScheduleForm, setShowScheduleForm] = useState(false)
+  const [startDate, setStartDate] = useState(format(new Date(), "yyyy-MM-dd"))
 
   useEffect(() => {
     if (!user || !id) return
+    const supabase = supabaseRef.current
 
     async function loadPlan() {
-      // Load plan details
       const { data: planData } = await supabase
         .from("workout_plans")
         .select("*")
@@ -94,7 +101,6 @@ export default function PlanDetailPage() {
       }
       setPlan(planData as Plan)
 
-      // Load weeks with nested workouts and exercises
       const { data: weeksData } = await supabase
         .from("plan_weeks")
         .select(`
@@ -108,6 +114,7 @@ export default function PlanDetailPage() {
             sort_order,
             plan_exercises (
               id,
+              exercise_id,
               exercise_name,
               sets,
               reps,
@@ -122,7 +129,6 @@ export default function PlanDetailPage() {
         .order("week_number", { ascending: true })
 
       if (weeksData) {
-        // Sort workouts and exercises within each week
         const sorted = (weeksData as PlanWeek[]).map((week) => ({
           ...week,
           plan_workouts: (week.plan_workouts || [])
@@ -141,18 +147,19 @@ export default function PlanDetailPage() {
     }
 
     loadPlan()
-  }, [user, id, supabase, router])
+  }, [user, id, router])
 
   async function handleDelete() {
     if (!plan || !confirm("Delete this plan? This cannot be undone.")) return
     setDeleting(true)
+    const supabase = supabaseRef.current
     await supabase.from("workout_plans").delete().eq("id", plan.id)
     router.push("/plans")
   }
 
   async function handleToggleActive() {
     if (!plan || !user) return
-    // Deactivate all other plans first
+    const supabase = supabaseRef.current
     if (!plan.is_active) {
       await supabase
         .from("workout_plans")
@@ -166,6 +173,120 @@ export default function PlanDetailPage() {
       .select()
       .single()
     if (data) setPlan(data as Plan)
+  }
+
+  async function handleSchedule() {
+    if (!plan || !user || weeks.length === 0) return
+    setScheduling(true)
+
+    try {
+      const supabase = supabaseRef.current
+      const planStart = new Date(startDate + "T00:00:00")
+      let created = 0
+
+      for (const week of weeks) {
+        // Calculate the start of this week (week 1 = startDate's week, etc.)
+        const weekOffset = week.week_number - 1
+        const weekStart = addWeeks(startOfWeek(planStart, { weekStartsOn: 0 }), weekOffset)
+
+        for (const workout of week.plan_workouts) {
+          // Figure out the date for this workout
+          let workoutDate: Date
+          if (workout.day_of_week !== null) {
+            // Place on the correct day of the week
+            workoutDate = addDays(weekStart, workout.day_of_week)
+          } else {
+            // No day specified — place based on sort order within the week
+            workoutDate = addDays(weekStart, workout.sort_order + 1) // +1 to skip Sunday
+          }
+
+          const dateStr = format(workoutDate, "yyyy-MM-dd")
+
+          // Create the workout entry
+          const { data: workoutRow, error: woError } = await supabase
+            .from("workouts")
+            .insert({
+              user_id: user.id,
+              plan_id: plan.id,
+              date: dateStr,
+              name: workout.name,
+              status: "scheduled",
+            })
+            .select()
+            .single()
+
+          if (woError) {
+            console.error("Failed to create workout:", woError)
+            continue
+          }
+
+          // Create workout_sets for each exercise
+          const sets: {
+            workout_id: string
+            exercise_id: string
+            set_number: number
+            set_type: string
+            reps: number | null
+            weight_kg: number | null
+            notes: string | null
+            completed: boolean
+            sort_order: number
+          }[] = []
+
+          let sortOrder = 0
+          for (const ex of workout.plan_exercises) {
+            if (!ex.exercise_id) continue
+
+            const numSets = ex.sets || 1
+            // Parse reps — take the first number from the rep string
+            let repCount: number | null = null
+            if (ex.reps) {
+              const repMatch = ex.reps.match(/(\d+)/)
+              if (repMatch) repCount = parseInt(repMatch[1])
+            }
+
+            // Parse weight from suggestion (e.g. "25 lb" → convert to kg)
+            let weightKg: number | null = null
+            if (ex.weight_suggestion) {
+              const wMatch = ex.weight_suggestion.match(/(\d+(?:\.\d+)?)\s*(?:lb|lbs?)/)
+              if (wMatch) weightKg = parseFloat(wMatch[1]) * 0.453592
+              const kgMatch = ex.weight_suggestion.match(/(\d+(?:\.\d+)?)\s*kg/)
+              if (kgMatch) weightKg = parseFloat(kgMatch[1])
+            }
+
+            const notes = [ex.notes, ex.weight_suggestion].filter(Boolean).join(" | ")
+
+            for (let s = 0; s < numSets; s++) {
+              sets.push({
+                workout_id: workoutRow.id,
+                exercise_id: ex.exercise_id,
+                set_number: s + 1,
+                set_type: "working",
+                reps: repCount,
+                weight_kg: weightKg,
+                notes: s === 0 ? notes || null : null,
+                completed: false,
+                sort_order: sortOrder++,
+              })
+            }
+          }
+
+          if (sets.length > 0) {
+            await supabase.from("workout_sets").insert(sets)
+          }
+
+          created++
+        }
+      }
+
+      toast.success(`Scheduled ${created} workouts to your calendar!`)
+      setShowScheduleForm(false)
+    } catch (err) {
+      console.error("Schedule error:", err)
+      toast.error("Failed to schedule workouts")
+    } finally {
+      setScheduling(false)
+    }
   }
 
   function toggleWeek(idx: number) {
@@ -259,7 +380,14 @@ export default function PlanDetailPage() {
               )}
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <Button
+              size="sm"
+              onClick={() => setShowScheduleForm(!showScheduleForm)}
+            >
+              <CalendarPlus className="mr-1 h-4 w-4" />
+              Schedule Plan
+            </Button>
             <Button
               variant={plan.is_active ? "outline" : "default"}
               size="sm"
@@ -279,6 +407,53 @@ export default function PlanDetailPage() {
             </Button>
           </div>
         </div>
+
+        {/* Schedule form */}
+        {showScheduleForm && (
+          <Card className="border-primary/50">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <CalendarPlus className="h-5 w-5 text-primary" />
+                Schedule Plan to Calendar
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                This will create <strong>{totalWorkouts} scheduled workouts</strong> on your calendar
+                starting from the week you choose. Each workout will be placed on the correct day
+                of the week with all exercises pre-loaded.
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="start-date">Start date (beginning of Week 1)</Label>
+                <Input
+                  id="start-date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="max-w-xs"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={handleSchedule} disabled={scheduling}>
+                  {scheduling ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Scheduling...
+                    </>
+                  ) : (
+                    <>
+                      <CalendarPlus className="mr-2 h-4 w-4" />
+                      Schedule {totalWorkouts} Workouts
+                    </>
+                  )}
+                </Button>
+                <Button variant="outline" onClick={() => setShowScheduleForm(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         <Separator />
 
@@ -339,7 +514,6 @@ export default function PlanDetailPage() {
                         key={workout.id}
                         className="border rounded-lg overflow-hidden"
                       >
-                        {/* Workout header */}
                         <div className="bg-accent/30 px-4 py-2.5 flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <Dumbbell className="h-4 w-4 text-primary" />
@@ -354,7 +528,6 @@ export default function PlanDetailPage() {
                           )}
                         </div>
 
-                        {/* Exercise list */}
                         <div className="divide-y">
                           {workout.plan_exercises.map((ex) => (
                             <div
