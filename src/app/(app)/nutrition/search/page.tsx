@@ -2,7 +2,13 @@
 
 import { useEffect, useState, useRef, useCallback } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { ArrowLeft, Search, Loader2 } from "lucide-react"
+import {
+  ArrowLeft,
+  Search,
+  Loader2,
+  Camera,
+  ScanBarcode,
+} from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/hooks/use-auth"
@@ -19,6 +25,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { CameraCapture } from "@/components/nutrition/camera-capture"
+import { BarcodeScanner } from "@/components/nutrition/barcode-scanner"
+import { AnalysisResultsSheet } from "@/components/nutrition/analysis-results-sheet"
+import type { FoodPhotoAnalysis, AnalyzedFoodItem } from "@/types/food-vision"
 
 type MealType = "breakfast" | "lunch" | "dinner" | "snack"
 
@@ -57,6 +73,14 @@ export default function FoodSearchPage() {
   const [servings, setServings] = useState(1)
   const [adding, setAdding] = useState(false)
   const [activeTab, setActiveTab] = useState<string>("my-foods")
+
+  // Camera & scanning state
+  const [showCamera, setShowCamera] = useState(false)
+  const [showBarcode, setShowBarcode] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analysisResults, setAnalysisResults] = useState<FoodPhotoAnalysis | null>(null)
+  const [showAnalysisResults, setShowAnalysisResults] = useState(false)
+  const [barcodeLoading, setBarcodeLoading] = useState(false)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -239,6 +263,126 @@ export default function FoodSearchPage() {
     }
   }
 
+  // --- Photo analysis handlers ---
+
+  const handlePhotoCapture = async (
+    base64: string,
+    mediaType: "image/jpeg" | "image/png" | "image/webp"
+  ) => {
+    setShowCamera(false)
+    setAnalyzing(true)
+
+    try {
+      const res = await fetch("/api/food-photo-analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_base64: base64, media_type: mediaType }),
+      })
+
+      if (res.ok) {
+        const analysis: FoodPhotoAnalysis = await res.json()
+        setAnalysisResults(analysis)
+        setShowAnalysisResults(true)
+      } else {
+        const err = await res.json()
+        alert(err.error || "Failed to analyze photo. Please try again.")
+      }
+    } catch {
+      alert("Failed to analyze photo. Please check your connection and try again.")
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  const handleBarcodeScan = async (barcode: string) => {
+    setShowBarcode(false)
+    setBarcodeLoading(true)
+
+    try {
+      const res = await fetch("/api/barcode-lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ barcode }),
+      })
+
+      if (res.ok) {
+        const food = await res.json()
+        handleSelectFood({
+          ...food,
+          source: "off" as const,
+        })
+      } else {
+        const err = await res.json()
+        alert(err.error || "Product not found for this barcode.")
+      }
+    } catch {
+      alert("Failed to look up barcode. Please check your connection and try again.")
+    } finally {
+      setBarcodeLoading(false)
+    }
+  }
+
+  const handleAddAnalyzedItems = async (items: AnalyzedFoodItem[]) => {
+    if (!user || items.length === 0) return
+    setAdding(true)
+
+    try {
+      // Find or create meal
+      let { data: existingMeal } = await supabase
+        .from("meals")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("date", date)
+        .eq("meal_type", mealType)
+        .single()
+
+      let mealId = existingMeal?.id
+
+      if (!mealId) {
+        const { data: newMeal } = await supabase
+          .from("meals")
+          .insert({
+            user_id: user.id,
+            date,
+            meal_type: mealType,
+          })
+          .select("id")
+          .single()
+
+        mealId = newMeal?.id
+      }
+
+      if (mealId) {
+        const mealItems = items.map((item) => ({
+          meal_id: mealId!,
+          food_id: null,
+          custom_name: item.name,
+          servings: 1,
+          calories: item.calories,
+          protein_g: item.protein,
+          carbs_g: item.carbs,
+          fat_g: item.fat,
+        }))
+
+        await supabase.from("meal_items").insert(mealItems)
+      }
+
+      setShowAnalysisResults(false)
+      setAnalysisResults(null)
+      router.push("/nutrition")
+    } catch {
+      alert("Failed to add food items. Please try again.")
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const handleSearchItem = (name: string) => {
+    setShowAnalysisResults(false)
+    setQuery(name)
+    setActiveTab("search")
+  }
+
   const renderFoodItem = (food: FoodResult) => (
     <button
       key={`${food.source}-${food.id || food.off_id || food.name}`}
@@ -294,6 +438,45 @@ export default function FoodSearchPage() {
             </p>
           </div>
         </div>
+
+        {/* Scan action buttons */}
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={() => setShowCamera(true)}
+            disabled={analyzing}
+          >
+            <Camera className="h-4 w-4 mr-2" />
+            Scan Food
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={() => setShowBarcode(true)}
+            disabled={barcodeLoading}
+          >
+            <ScanBarcode className="h-4 w-4 mr-2" />
+            Scan Barcode
+          </Button>
+        </div>
+
+        {/* Analyzing overlay */}
+        {(analyzing || barcodeLoading) && (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto mb-3" />
+              <p className="text-sm font-medium">
+                {analyzing ? "Analyzing your meal..." : "Looking up product..."}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {analyzing
+                  ? "AI is identifying food items and estimating nutrition"
+                  : "Searching the food database"}
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Search input */}
         <div className="relative">
@@ -461,6 +644,60 @@ export default function FoodSearchPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Camera capture sheet */}
+      <Sheet open={showCamera} onOpenChange={setShowCamera}>
+        <SheetContent side="bottom" className="max-h-[90vh]">
+          <SheetHeader>
+            <SheetTitle>Scan Food</SheetTitle>
+          </SheetHeader>
+          <div className="p-4 pt-0">
+            <CameraCapture
+              onCapture={handlePhotoCapture}
+              onCancel={() => setShowCamera(false)}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Barcode scanner sheet */}
+      <Sheet open={showBarcode} onOpenChange={setShowBarcode}>
+        <SheetContent side="bottom" className="max-h-[90vh]">
+          <SheetHeader>
+            <SheetTitle>Scan Barcode</SheetTitle>
+          </SheetHeader>
+          <div className="p-4 pt-0">
+            <BarcodeScanner
+              onScan={handleBarcodeScan}
+              onCancel={() => setShowBarcode(false)}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Analysis results sheet */}
+      <Sheet open={showAnalysisResults} onOpenChange={setShowAnalysisResults}>
+        <SheetContent side="bottom" className="max-h-[85vh]">
+          <SheetHeader>
+            <SheetTitle>Food Analysis Results</SheetTitle>
+          </SheetHeader>
+          <div className="p-4 pt-0">
+            {analysisResults && (
+              <AnalysisResultsSheet
+                analysis={analysisResults}
+                mealLabel={mealLabels[mealType]}
+                adding={adding}
+                onAddItems={handleAddAnalyzedItems}
+                onSearchItem={handleSearchItem}
+                onClose={() => {
+                  setShowAnalysisResults(false)
+                  setAnalysisResults(null)
+                }}
+              />
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </>
   )
 }
