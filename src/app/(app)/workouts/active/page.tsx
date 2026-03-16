@@ -43,6 +43,8 @@ interface ActiveExercise {
 interface WorkoutState {
   name: string
   exercises: ActiveExercise[]
+  scheduledWorkoutId?: string
+  startedAt?: string
 }
 
 const REST_OPTIONS = [60, 90, 120, 180] as const
@@ -77,7 +79,7 @@ export default function ActiveWorkoutPage() {
   const [restDuration, setRestDuration] = useState<number>(90)
   const [isResting, setIsResting] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [startedAt] = useState(() => new Date().toISOString())
+  const [startedAt, setStartedAt] = useState<string>("")
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const restTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -89,6 +91,22 @@ export default function ActiveWorkoutPage() {
       try {
         const parsed: WorkoutState = JSON.parse(stored)
         setWorkout(parsed)
+
+        // Restore startedAt from stored state, or set a new one
+        const storedStartedAt = parsed.startedAt || new Date().toISOString()
+        setStartedAt(storedStartedAt)
+
+        // Calculate elapsed time from stored startedAt
+        const startTime = new Date(storedStartedAt).getTime()
+        const nowTime = Date.now()
+        const elapsed = Math.floor((nowTime - startTime) / 1000)
+        setElapsedSeconds(Math.max(0, elapsed))
+
+        // Save startedAt back if it wasn't stored
+        if (!parsed.startedAt) {
+          const updated = { ...parsed, startedAt: storedStartedAt }
+          localStorage.setItem("activeWorkout", JSON.stringify(updated))
+        }
       } catch {
         router.push("/workouts/new")
       }
@@ -97,7 +115,7 @@ export default function ActiveWorkoutPage() {
     }
   }, [router])
 
-  // Elapsed time timer
+  // Elapsed time timer - counts from actual startedAt
   useEffect(() => {
     timerRef.current = setInterval(() => {
       setElapsedSeconds((prev) => prev + 1)
@@ -238,32 +256,65 @@ export default function ActiveWorkoutPage() {
         })
       })
 
-      // Create workout record
-      const { data: workoutRecord, error: workoutError } = await supabase
-        .from("workouts")
-        .insert({
-          user_id: user.id,
-          date: today,
-          name: workout.name || null,
-          status: "completed" as const,
-          started_at: startedAt,
-          completed_at: now,
-          duration_minutes: durationMinutes,
-          total_volume_kg: Math.round(totalVolumeKg * 100) / 100,
-        })
-        .select("id")
-        .single()
+      const workoutData = {
+        status: "completed" as const,
+        started_at: startedAt || now,
+        completed_at: now,
+        duration_minutes: durationMinutes,
+        total_volume_kg: Math.round(totalVolumeKg * 100) / 100,
+      }
 
-      if (workoutError || !workoutRecord) {
-        console.error("Error creating workout:", workoutError)
-        setSaving(false)
-        return
+      let workoutId: string
+
+      if (workout.scheduledWorkoutId) {
+        // UPDATE the existing scheduled/in_progress workout record
+        const { error: updateError } = await supabase
+          .from("workouts")
+          .update({
+            ...workoutData,
+            name: workout.name || null,
+          })
+          .eq("id", workout.scheduledWorkoutId)
+
+        if (updateError) {
+          console.error("Error updating workout:", updateError)
+          setSaving(false)
+          return
+        }
+
+        workoutId = workout.scheduledWorkoutId
+
+        // Delete any existing sets from the scheduled workout (they'll be replaced)
+        await supabase
+          .from("workout_sets")
+          .delete()
+          .eq("workout_id", workoutId)
+      } else {
+        // CREATE a new workout record (ad-hoc workout, not from schedule)
+        const { data: workoutRecord, error: workoutError } = await supabase
+          .from("workouts")
+          .insert({
+            user_id: user.id,
+            date: today,
+            name: workout.name || null,
+            ...workoutData,
+          })
+          .select("id")
+          .single()
+
+        if (workoutError || !workoutRecord) {
+          console.error("Error creating workout:", workoutError)
+          setSaving(false)
+          return
+        }
+
+        workoutId = workoutRecord.id
       }
 
       // Create all workout sets (convert lbs to kg for storage)
       const setsToInsert = workout.exercises.flatMap((ex, exIdx) =>
         ex.sets.map((s, sIdx) => ({
-          workout_id: workoutRecord.id,
+          workout_id: workoutId,
           exercise_id: ex.exerciseId,
           set_number: s.setNumber,
           set_type: s.setType,
@@ -622,4 +673,3 @@ export default function ActiveWorkoutPage() {
     </>
   )
 }
-

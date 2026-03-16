@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
@@ -9,7 +9,13 @@ import { Header } from "@/components/layout/header"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 import {
   ArrowLeft,
@@ -17,8 +23,14 @@ import {
   Clock,
   Dumbbell,
   Weight,
+  Pencil,
+  Trash2,
+  Check,
+  X,
+  Save,
 } from "lucide-react"
 import Link from "next/link"
+import { toast } from "sonner"
 
 interface WorkoutSet {
   id: string
@@ -58,6 +70,13 @@ interface GroupedExercise {
   sets: WorkoutSet[]
 }
 
+interface EditableSet {
+  id: string
+  reps: number | null
+  weight_lbs: number | null
+  rpe: number | null
+}
+
 const setTypeConfig: Record<string, { label: string; short: string; color: string }> = {
   warmup: { label: "Warm-up", short: "W", color: "text-yellow-400" },
   working: { label: "Working", short: "S", color: "text-foreground" },
@@ -95,53 +114,57 @@ export default function WorkoutDetailPage() {
   const [workout, setWorkout] = useState<WorkoutDetail | null>(null)
   const [exercises, setExercises] = useState<Map<string, ExerciseInfo>>(new Map())
   const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(false)
+  const [editableSets, setEditableSets] = useState<Map<string, EditableSet>>(new Map())
+  const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
-  useEffect(() => {
+  const fetchWorkout = useCallback(async () => {
     if (!user || !workoutId) return
 
-    async function fetchWorkout() {
-      const { data, error } = await supabase
-        .from("workouts")
-        .select(
-          "id, name, date, notes, status, started_at, completed_at, duration_minutes, total_volume_kg, calories_burned, workout_sets(id, exercise_id, set_number, set_type, reps, weight_kg, rpe, completed, sort_order)"
-        )
-        .eq("id", workoutId)
-        .eq("user_id", user!.id)
-        .single()
+    const { data, error } = await supabase
+      .from("workouts")
+      .select(
+        "id, name, date, notes, status, started_at, completed_at, duration_minutes, total_volume_kg, calories_burned, workout_sets(id, exercise_id, set_number, set_type, reps, weight_kg, rpe, completed, sort_order)"
+      )
+      .eq("id", workoutId)
+      .eq("user_id", user.id)
+      .single()
 
-      if (error || !data) {
-        console.error("Error fetching workout:", error)
-        setLoading(false)
-        return
-      }
-
-      setWorkout(data as WorkoutDetail)
-
-      // Fetch exercise info for all unique exercise IDs
-      const exerciseIds = [
-        ...new Set(
-          (data.workout_sets as WorkoutSet[]).map((s) => s.exercise_id)
-        ),
-      ]
-
-      if (exerciseIds.length > 0) {
-        const { data: exerciseData } = await supabase
-          .from("exercises")
-          .select("id, name, category, equipment")
-          .in("id", exerciseIds)
-
-        if (exerciseData) {
-          const map = new Map<string, ExerciseInfo>()
-          exerciseData.forEach((ex) => map.set(ex.id, ex))
-          setExercises(map)
-        }
-      }
-
+    if (error || !data) {
+      console.error("Error fetching workout:", error)
       setLoading(false)
+      return
     }
 
-    fetchWorkout()
+    setWorkout(data as WorkoutDetail)
+
+    // Fetch exercise info for all unique exercise IDs
+    const exerciseIds = [
+      ...new Set(
+        (data.workout_sets as WorkoutSet[]).map((s) => s.exercise_id)
+      ),
+    ]
+
+    if (exerciseIds.length > 0) {
+      const { data: exerciseData } = await supabase
+        .from("exercises")
+        .select("id, name, category, equipment")
+        .in("id", exerciseIds)
+
+      if (exerciseData) {
+        const map = new Map<string, ExerciseInfo>()
+        exerciseData.forEach((ex) => map.set(ex.id, ex))
+        setExercises(map)
+      }
+    }
+
+    setLoading(false)
   }, [user, workoutId, supabase])
+
+  useEffect(() => {
+    fetchWorkout()
+  }, [fetchWorkout])
 
   // Group sets by exercise, maintaining sort order
   const groupedExercises: GroupedExercise[] = (() => {
@@ -172,6 +195,120 @@ export default function WorkoutDetailPage() {
 
     return groups
   })()
+
+  function startEditing() {
+    if (!workout) return
+    const map = new Map<string, EditableSet>()
+    workout.workout_sets.forEach((set) => {
+      map.set(set.id, {
+        id: set.id,
+        reps: set.reps,
+        weight_lbs: set.weight_kg
+          ? Math.round(set.weight_kg * 2.20462 * 10) / 10
+          : null,
+        rpe: set.rpe,
+      })
+    })
+    setEditableSets(map)
+    setEditing(true)
+  }
+
+  function cancelEditing() {
+    setEditing(false)
+    setEditableSets(new Map())
+  }
+
+  function updateEditableSet(setId: string, field: keyof EditableSet, value: number | null) {
+    setEditableSets((prev) => {
+      const next = new Map(prev)
+      const existing = next.get(setId)
+      if (existing) {
+        next.set(setId, { ...existing, [field]: value })
+      }
+      return next
+    })
+  }
+
+  async function saveEdits() {
+    if (!workout) return
+    setSaving(true)
+
+    try {
+      // Update each changed set
+      const updates = [...editableSets.values()].map((editSet) => {
+        const originalSet = workout.workout_sets.find((s) => s.id === editSet.id)
+        if (!originalSet) return null
+
+        const newWeightKg = editSet.weight_lbs
+          ? Math.round((editSet.weight_lbs / 2.20462) * 100) / 100
+          : null
+
+        return supabase
+          .from("workout_sets")
+          .update({
+            reps: editSet.reps,
+            weight_kg: newWeightKg,
+            rpe: editSet.rpe,
+          })
+          .eq("id", editSet.id)
+      }).filter(Boolean)
+
+      await Promise.all(updates)
+
+      // Recalculate total volume
+      let totalVolumeKg = 0
+      workout.workout_sets.forEach((set) => {
+        const editSet = editableSets.get(set.id)
+        if (editSet && set.completed) {
+          const weightKg = editSet.weight_lbs ? editSet.weight_lbs / 2.20462 : 0
+          totalVolumeKg += weightKg * (editSet.reps || 0)
+        }
+      })
+
+      await supabase
+        .from("workouts")
+        .update({ total_volume_kg: Math.round(totalVolumeKg * 100) / 100 })
+        .eq("id", workout.id)
+
+      toast.success("Workout updated")
+      setEditing(false)
+      setEditableSets(new Map())
+      // Refresh data
+      setLoading(true)
+      await fetchWorkout()
+    } catch (err) {
+      console.error("Error saving edits:", err)
+      toast.error("Failed to save changes")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!workout) return
+    setDeleting(true)
+
+    try {
+      // Delete sets first (foreign key), then workout
+      await supabase
+        .from("workout_sets")
+        .delete()
+        .eq("workout_id", workout.id)
+
+      await supabase
+        .from("workouts")
+        .delete()
+        .eq("id", workout.id)
+
+      toast.success("Workout deleted")
+      router.push("/workouts")
+    } catch (err) {
+      console.error("Error deleting workout:", err)
+      toast.error("Failed to delete workout")
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const volumeLbs = workout?.total_volume_kg
     ? Math.round(workout.total_volume_kg * 2.20462)
@@ -216,8 +353,8 @@ export default function WorkoutDetailPage() {
     <>
       <Header title={workout.name || "Workout"} />
       <div className="p-4 lg:p-8 space-y-6">
-        {/* Back + Title */}
-        <div className="flex items-center gap-3">
+        {/* Back + Title + Actions */}
+        <div className="flex items-start gap-3">
           <Link href="/workouts">
             <Button variant="ghost" size="icon">
               <ArrowLeft className="h-4 w-4" />
@@ -238,6 +375,66 @@ export default function WorkoutDetailPage() {
               <Calendar className="h-3.5 w-3.5" />
               <span>{format(new Date(workout.date), "EEEE, MMMM d, yyyy")}</span>
             </div>
+          </div>
+          {/* Edit/Delete actions */}
+          <div className="flex items-center gap-1 shrink-0">
+            {editing ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={cancelEditing}
+                  disabled={saving}
+                >
+                  <X className="h-4 w-4 mr-1" />
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={saveEdits}
+                  disabled={saving}
+                >
+                  <Save className="h-4 w-4 mr-1" />
+                  {saving ? "Saving..." : "Save"}
+                </Button>
+              </>
+            ) : (
+              <>
+                {workout.workout_sets.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={startEditing}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                )}
+                <AlertDialog>
+                  <AlertDialogTrigger
+                    render={<Button variant="ghost" size="icon" />}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete Workout</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently delete this workout and all its sets. This action cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={handleDelete}
+                        disabled={deleting}
+                      >
+                        {deleting ? "Deleting..." : "Delete"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </>
+            )}
           </div>
         </div>
 
@@ -331,18 +528,93 @@ export default function WorkoutDetailPage() {
                 </CardHeader>
                 <CardContent>
                   {/* Column headers */}
-                  <div className="flex items-center gap-2 px-3 pb-1 text-xs text-muted-foreground border-b mb-1">
+                  <div className={cn(
+                    "flex items-center gap-2 px-3 pb-1 text-xs text-muted-foreground border-b mb-1",
+                  )}>
                     <span className="w-10">Set</span>
                     <span className="flex-1 text-center">Weight</span>
                     <span className="flex-1 text-center">Reps</span>
                     <span className="w-12 text-center">RPE</span>
                   </div>
 
-                  {group.sets.map((set, sIdx) => {
+                  {group.sets.map((set) => {
                     const typeConf = setTypeConfig[set.set_type] || setTypeConfig.working
+                    const editSet = editableSets.get(set.id)
                     const weightLbs = set.weight_kg
                       ? Math.round(set.weight_kg * 2.20462 * 10) / 10
                       : null
+
+                    if (editing && editSet) {
+                      return (
+                        <div
+                          key={set.id}
+                          className={cn(
+                            "flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
+                            set.completed
+                              ? "bg-green-500/5"
+                              : "opacity-50"
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "w-10 font-medium text-xs",
+                              typeConf.color
+                            )}
+                          >
+                            {typeConf.short}{set.set_number}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              value={editSet.weight_lbs ?? ""}
+                              onChange={(e) =>
+                                updateEditableSet(
+                                  set.id,
+                                  "weight_lbs",
+                                  e.target.value ? Number(e.target.value) : null
+                                )
+                              }
+                              className="h-7 text-center text-sm"
+                              placeholder="lbs"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              value={editSet.reps ?? ""}
+                              onChange={(e) =>
+                                updateEditableSet(
+                                  set.id,
+                                  "reps",
+                                  e.target.value ? Number(e.target.value) : null
+                                )
+                              }
+                              className="h-7 text-center text-sm"
+                              placeholder="reps"
+                            />
+                          </div>
+                          <div className="w-12">
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              value={editSet.rpe ?? ""}
+                              onChange={(e) =>
+                                updateEditableSet(
+                                  set.id,
+                                  "rpe",
+                                  e.target.value ? Number(e.target.value) : null
+                                )
+                              }
+                              className="h-7 text-center text-xs"
+                              placeholder="RPE"
+                            />
+                          </div>
+                        </div>
+                      )
+                    }
+
                     return (
                       <div
                         key={set.id}

@@ -171,8 +171,8 @@ export default function CalendarPage() {
         {/* Day Detail */}
         {selectedDate && (
           <div className="space-y-3">
-            {/* Scheduled workout preview with start/skip */}
-            {selectedData?.workouts.some((w) => w.status === "scheduled") && (
+            {/* Workout preview with start/skip/resume/view */}
+            {selectedData?.workouts.some((w) => ["scheduled", "in_progress", "completed"].includes(w.status)) && (
               <TodaysWorkout
                 date={format(selectedDate, "yyyy-MM-dd")}
               />

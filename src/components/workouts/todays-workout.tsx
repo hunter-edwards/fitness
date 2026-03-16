@@ -17,6 +17,9 @@ import {
   ChevronUp,
   Clock,
   X,
+  CheckCircle2,
+  RotateCcw,
+  Eye,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -37,6 +40,10 @@ interface ScheduledWorkout {
   date: string
   status: string
   plan_id: string | null
+  duration_minutes: number | null
+  total_volume_kg: number | null
+  started_at: string | null
+  completed_at: string | null
   workout_sets: ScheduledSet[]
 }
 
@@ -82,29 +89,30 @@ export function TodaysWorkout({
   useEffect(() => {
     if (!user) return
 
-    async function fetchScheduledWorkouts() {
+    async function fetchTodaysWorkouts() {
+      // Fetch ALL workouts for this date (scheduled, in_progress, and completed)
       const { data, error } = await supabase
         .from("workouts")
         .select(
-          "id, name, date, status, plan_id, workout_sets(id, exercise_id, set_number, set_type, reps, weight_kg, notes, sort_order)"
+          "id, name, date, status, plan_id, duration_minutes, total_volume_kg, started_at, completed_at, workout_sets(id, exercise_id, set_number, set_type, reps, weight_kg, notes, sort_order)"
         )
         .eq("user_id", user!.id)
         .eq("date", targetDate)
-        .eq("status", "scheduled")
+        .in("status", ["scheduled", "in_progress", "completed"])
         .order("created_at", { ascending: true })
 
       if (error) {
-        console.error("Error fetching scheduled workouts:", error)
+        console.error("Error fetching today's workouts:", error)
         setLoading(false)
         return
       }
 
-      const scheduled = (data || []) as ScheduledWorkout[]
-      setWorkouts(scheduled)
+      const todaysWorkouts = (data || []) as ScheduledWorkout[]
+      setWorkouts(todaysWorkouts)
 
       // Fetch exercise names for all unique exercise IDs
       const allExerciseIds = new Set<string>()
-      scheduled.forEach((w) => {
+      todaysWorkouts.forEach((w) => {
         w.workout_sets.forEach((s) => allExerciseIds.add(s.exercise_id))
       })
 
@@ -124,7 +132,7 @@ export function TodaysWorkout({
       setLoading(false)
     }
 
-    fetchScheduledWorkouts()
+    fetchTodaysWorkouts()
   }, [user, targetDate, supabase])
 
   function groupSets(sets: ScheduledSet[]): GroupedExercise[] {
@@ -156,9 +164,11 @@ export function TodaysWorkout({
     const grouped = groupSets(workout.workout_sets)
 
     // Build the activeWorkout state that the active workout page expects
+    const now = new Date().toISOString()
     const workoutState = {
       name: workout.name || `Workout - ${format(new Date(), "MMM d")}`,
       scheduledWorkoutId: workout.id,
+      startedAt: now,
       exercises: grouped.map((g) => ({
         exerciseId: g.exerciseId,
         exerciseName: g.exerciseName,
@@ -178,11 +188,46 @@ export function TodaysWorkout({
     // Update workout status to in_progress
     await supabase
       .from("workouts")
-      .update({ status: "in_progress", started_at: new Date().toISOString() })
+      .update({ status: "in_progress", started_at: now })
       .eq("id", workout.id)
 
     localStorage.setItem("activeWorkout", JSON.stringify(workoutState))
     router.push("/workouts/active")
+  }
+
+  function handleResumeWorkout() {
+    // Check if there's an active workout in localStorage
+    const stored = localStorage.getItem("activeWorkout")
+    if (stored) {
+      router.push("/workouts/active")
+    } else {
+      // If no localStorage data, we need to rebuild it from the in_progress workout
+      const inProgressWorkout = workouts.find((w) => w.status === "in_progress")
+      if (inProgressWorkout) {
+        const grouped = groupSets(inProgressWorkout.workout_sets)
+        const workoutState = {
+          name: inProgressWorkout.name || `Workout - ${format(new Date(), "MMM d")}`,
+          scheduledWorkoutId: inProgressWorkout.id,
+          startedAt: inProgressWorkout.started_at || new Date().toISOString(),
+          exercises: grouped.map((g) => ({
+            exerciseId: g.exerciseId,
+            exerciseName: g.exerciseName,
+            sets: g.sets.map((s) => ({
+              setNumber: s.set_number,
+              setType: s.set_type,
+              reps: s.reps,
+              weight: s.weight_kg
+                ? Math.round(s.weight_kg * 2.20462 * 10) / 10
+                : null,
+              rpe: null,
+              completed: false,
+            })),
+          })),
+        }
+        localStorage.setItem("activeWorkout", JSON.stringify(workoutState))
+        router.push("/workouts/active")
+      }
+    }
   }
 
   async function handleSkipWorkout(workout: ScheduledWorkout) {
@@ -200,35 +245,84 @@ export function TodaysWorkout({
   }
 
   if (workouts.length === 0) {
-    return null // Don't render anything if no scheduled workouts
+    return null // Don't render anything if no workouts for this date
   }
+
+  // Sort workouts: in_progress first, then scheduled, then completed
+  const sortedWorkouts = [...workouts].sort((a, b) => {
+    const order: Record<string, number> = { in_progress: 0, scheduled: 1, completed: 2 }
+    return (order[a.status] ?? 3) - (order[b.status] ?? 3)
+  })
 
   return (
     <div className={cn("space-y-3", className)}>
-      {workouts.map((workout) => {
+      {sortedWorkouts.map((workout) => {
         const grouped = groupSets(workout.workout_sets)
         const totalSets = workout.workout_sets.length
         const totalExercises = grouped.length
+        const isInProgress = workout.status === "in_progress"
+        const isCompleted = workout.status === "completed"
+        const isScheduled = workout.status === "scheduled"
 
         return (
           <Card
             key={workout.id}
-            className="border-primary/20 bg-primary/[0.02]"
+            className={cn(
+              isInProgress && "border-yellow-500/30 bg-yellow-500/[0.03]",
+              isScheduled && "border-primary/20 bg-primary/[0.02]",
+              isCompleted && "border-green-500/20 bg-green-500/[0.02]"
+            )}
           >
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className="rounded-full bg-primary/10 p-1.5">
-                    <Dumbbell className="h-4 w-4 text-primary" />
+                  <div
+                    className={cn(
+                      "rounded-full p-1.5",
+                      isInProgress && "bg-yellow-500/10",
+                      isScheduled && "bg-primary/10",
+                      isCompleted && "bg-green-500/10"
+                    )}
+                  >
+                    {isCompleted ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : isInProgress ? (
+                      <RotateCcw className="h-4 w-4 text-yellow-500" />
+                    ) : (
+                      <Dumbbell className="h-4 w-4 text-primary" />
+                    )}
                   </div>
                   <div className="min-w-0">
-                    <CardTitle className="text-base truncate">
-                      {workout.name || "Scheduled Workout"}
-                    </CardTitle>
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-base truncate">
+                        {workout.name || "Workout"}
+                      </CardTitle>
+                      {isInProgress && (
+                        <Badge className="bg-yellow-500/15 text-yellow-600 border-yellow-500/25 shrink-0">
+                          In Progress
+                        </Badge>
+                      )}
+                      {isCompleted && (
+                        <Badge className="bg-green-500/15 text-green-600 border-green-500/25 shrink-0">
+                          Completed
+                        </Badge>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">
-                      {totalExercises}{" "}
-                      {totalExercises === 1 ? "exercise" : "exercises"} -{" "}
-                      {totalSets} {totalSets === 1 ? "set" : "sets"}
+                      {isCompleted && workout.duration_minutes ? (
+                        <>
+                          {workout.duration_minutes} min
+                          {workout.total_volume_kg
+                            ? ` · ${Math.round(workout.total_volume_kg * 2.20462).toLocaleString()} lbs`
+                            : ""}
+                        </>
+                      ) : (
+                        <>
+                          {totalExercises}{" "}
+                          {totalExercises === 1 ? "exercise" : "exercises"} -{" "}
+                          {totalSets} {totalSets === 1 ? "set" : "sets"}
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -252,11 +346,11 @@ export function TodaysWorkout({
 
             <CardContent className="space-y-3">
               {/* Exercise preview - always show in compact, toggle in full */}
-              {(compact || expanded) && (
+              {(compact || expanded) && !isCompleted && (
                 <div className="space-y-1">
                   {grouped
                     .slice(0, compact ? 5 : undefined)
-                    .map((group, i) => (
+                    .map((group) => (
                       <div
                         key={group.exerciseId}
                         className="flex items-center justify-between text-sm py-1"
@@ -289,25 +383,79 @@ export function TodaysWorkout({
                 </div>
               )}
 
+              {/* Completed workout summary */}
+              {isCompleted && (compact || expanded) && (
+                <div className="space-y-1">
+                  {grouped
+                    .slice(0, compact ? 3 : undefined)
+                    .map((group) => (
+                      <div
+                        key={group.exerciseId}
+                        className="flex items-center justify-between text-sm py-1"
+                      >
+                        <span className="truncate text-muted-foreground">
+                          {group.exerciseName}
+                        </span>
+                        <span className="text-xs text-muted-foreground shrink-0 ml-2 tabular-nums">
+                          {group.sets.length}{" "}
+                          {group.sets.length === 1 ? "set" : "sets"}
+                        </span>
+                      </div>
+                    ))}
+                  {compact && grouped.length > 3 && (
+                    <p className="text-xs text-muted-foreground">
+                      +{grouped.length - 3} more exercises
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Action buttons */}
               <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => handleStartWorkout(workout)}
-                  disabled={starting}
-                >
-                  <Play className="h-3.5 w-3.5 mr-1.5" />
-                  {starting ? "Loading..." : "Start Workout"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleSkipWorkout(workout)}
-                >
-                  <X className="h-3.5 w-3.5 mr-1" />
-                  Skip
-                </Button>
+                {isScheduled && (
+                  <>
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleStartWorkout(workout)}
+                      disabled={starting}
+                    >
+                      <Play className="h-3.5 w-3.5 mr-1.5" />
+                      {starting ? "Loading..." : "Start Workout"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleSkipWorkout(workout)}
+                    >
+                      <X className="h-3.5 w-3.5 mr-1" />
+                      Skip
+                    </Button>
+                  </>
+                )}
+
+                {isInProgress && (
+                  <Button
+                    size="sm"
+                    className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white"
+                    onClick={handleResumeWorkout}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                    Resume Workout
+                  </Button>
+                )}
+
+                {isCompleted && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => router.push(`/workouts/${workout.id}`)}
+                  >
+                    <Eye className="h-3.5 w-3.5 mr-1.5" />
+                    View Details
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>
