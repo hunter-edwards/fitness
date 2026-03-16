@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useCallback } from "react"
 import Link from "next/link"
-import { format } from "date-fns"
+import { format, subDays } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/hooks/use-auth"
 import { Header } from "@/components/layout/header"
@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import { Plus, Target, Trash2, CheckCircle2 } from "lucide-react"
+import { Plus, Target, Trash2, CheckCircle2, Pencil, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 
@@ -28,6 +28,125 @@ export default function GoalsPage() {
   const [goals, setGoals] = useState<Goal[]>([])
   const [loading, setLoading] = useState(true)
 
+  const syncGoalProgress = useCallback(async (goals: Goal[]) => {
+    if (!user) return goals
+
+    const activeGoals = goals.filter((g) => g.status === "active")
+    if (activeGoals.length === 0) return goals
+
+    const updates: { id: string; current_value: number }[] = []
+
+    // Fetch latest weight for weight goals
+    const weightGoals = activeGoals.filter((g) => g.category === "weight")
+    if (weightGoals.length > 0) {
+      const { data: latestWeight } = await supabase
+        .from("weight_entries")
+        .select("weight_kg")
+        .eq("user_id", user.id)
+        .order("date", { ascending: false })
+        .limit(1)
+        .single()
+
+      if (latestWeight) {
+        const weightLbs = Math.round(latestWeight.weight_kg * 2.20462 * 10) / 10
+        const weightKg = Math.round(latestWeight.weight_kg * 10) / 10
+        weightGoals.forEach((g) => {
+          const val = g.target_unit === "kg" ? weightKg : weightLbs
+          if (g.current_value !== val) {
+            updates.push({ id: g.id, current_value: val })
+          }
+        })
+      }
+    }
+
+    // Fetch avg daily steps for activity goals
+    const activityGoals = activeGoals.filter((g) => g.category === "activity")
+    if (activityGoals.length > 0) {
+      const weekAgo = format(subDays(new Date(), 7), "yyyy-MM-dd")
+      const { data: recentActivity } = await supabase
+        .from("activity_entries")
+        .select("steps, active_minutes")
+        .eq("user_id", user.id)
+        .gte("date", weekAgo)
+
+      if (recentActivity && recentActivity.length > 0) {
+        const avgSteps = Math.round(
+          recentActivity.reduce((s, a) => s + (a.steps || 0), 0) / recentActivity.length
+        )
+        const avgMinutes = Math.round(
+          recentActivity.reduce((s, a) => s + (a.active_minutes || 0), 0) / recentActivity.length
+        )
+        activityGoals.forEach((g) => {
+          const unit = (g.target_unit || "").toLowerCase()
+          let val: number | null = null
+          if (unit.includes("step")) val = avgSteps
+          else if (unit.includes("min")) val = avgMinutes
+          else val = avgSteps // default to steps
+          if (val !== null && g.current_value !== val) {
+            updates.push({ id: g.id, current_value: val })
+          }
+        })
+      }
+    }
+
+    // Fetch avg daily nutrition for nutrition goals
+    const nutritionGoals = activeGoals.filter((g) => g.category === "nutrition")
+    if (nutritionGoals.length > 0) {
+      const weekAgo = format(subDays(new Date(), 7), "yyyy-MM-dd")
+      const { data: recentMeals } = await supabase
+        .from("meals")
+        .select("date, meal_items(calories, protein_g)")
+        .eq("user_id", user.id)
+        .gte("date", weekAgo)
+
+      if (recentMeals && recentMeals.length > 0) {
+        type MealRow = { date: string; meal_items: { calories: number | null; protein_g: number | null }[] }
+        const dailyTotals: Record<string, { cals: number; protein: number }> = {}
+        ;(recentMeals as MealRow[]).forEach((m) => {
+          if (!dailyTotals[m.date]) dailyTotals[m.date] = { cals: 0, protein: 0 }
+          ;(m.meal_items || []).forEach((item) => {
+            dailyTotals[m.date].cals += item.calories || 0
+            dailyTotals[m.date].protein += item.protein_g || 0
+          })
+        })
+        const days = Object.values(dailyTotals)
+        const avgCals = Math.round(days.reduce((s, d) => s + d.cals, 0) / days.length)
+        const avgProtein = Math.round(days.reduce((s, d) => s + d.protein, 0) / days.length)
+
+        nutritionGoals.forEach((g) => {
+          const unit = (g.target_unit || "").toLowerCase()
+          let val: number | null = null
+          if (unit.includes("cal")) val = avgCals
+          else if (unit.includes("g") || unit.includes("protein")) val = avgProtein
+          else val = avgCals
+          if (val !== null && g.current_value !== val) {
+            updates.push({ id: g.id, current_value: val })
+          }
+        })
+      }
+    }
+
+    // Batch update changed goals
+    if (updates.length > 0) {
+      await Promise.all(
+        updates.map((u) =>
+          supabase
+            .from("goals")
+            .update({ current_value: u.current_value, updated_at: new Date().toISOString() })
+            .eq("id", u.id)
+        )
+      )
+
+      // Apply updates to local state
+      return goals.map((g) => {
+        const update = updates.find((u) => u.id === g.id)
+        return update ? { ...g, current_value: update.current_value } : g
+      })
+    }
+
+    return goals
+  }, [user, supabase])
+
   const fetchGoals = async () => {
     if (!user) return
     const { data } = await supabase
@@ -36,7 +155,10 @@ export default function GoalsPage() {
       .eq("user_id", user.id)
       .order("status", { ascending: true })
       .order("created_at", { ascending: false })
-    setGoals(data || [])
+
+    const goals = data || []
+    const synced = await syncGoalProgress(goals)
+    setGoals(synced)
     setLoading(false)
   }
 
@@ -131,8 +253,11 @@ export default function GoalsPage() {
                         {goal.target_value && (
                           <div>
                             <div className="flex justify-between text-sm mb-1">
-                              <span>
+                              <span className="flex items-center gap-1">
                                 {goal.current_value ?? 0} {goal.target_unit || ""}
+                                {["weight", "activity", "nutrition"].includes(goal.category) && (
+                                  <RefreshCw className="h-3 w-3 text-muted-foreground" />
+                                )}
                               </span>
                               <span className="text-muted-foreground">
                                 {goal.target_value} {goal.target_unit || ""}
@@ -148,6 +273,11 @@ export default function GoalsPage() {
                             </span>
                           )}
                           <div className="ml-auto flex gap-1">
+                            <Link href={`/goals/${goal.id}`}>
+                              <Button variant="ghost" size="sm">
+                                <Pencil className="h-4 w-4 text-muted-foreground" />
+                              </Button>
+                            </Link>
                             <Button
                               variant="ghost"
                               size="sm"

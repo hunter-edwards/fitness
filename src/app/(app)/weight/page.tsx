@@ -79,6 +79,23 @@ export default function WeightPage() {
     setEntries((prev) => prev.filter((e) => e.id !== id))
   }
 
+  async function handleEdit(id: string, data: { weight_kg: number; body_fat_pct: number | null; notes: string | null }) {
+    const { error } = await supabase
+      .from("weight_entries")
+      .update(data)
+      .eq("id", id)
+      .eq("user_id", user!.id)
+
+    if (error) {
+      console.error("Failed to update weight entry:", error)
+      return
+    }
+
+    setEntries((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, ...data } : e))
+    )
+  }
+
   // Compute summary stats
   const sorted = [...entries].sort(
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
@@ -226,7 +243,7 @@ export default function WeightPage() {
                   ))}
                 </div>
               ) : (
-                <WeightHistory entries={entries} onDelete={handleDelete} />
+                <WeightHistory entries={entries} onDelete={handleDelete} onEdit={handleEdit} />
               )}
             </CardContent>
           </Card>

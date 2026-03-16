@@ -2,9 +2,10 @@
 
 import { useState } from "react"
 import { format, parseISO } from "date-fns"
-import { Trash2 } from "lucide-react"
-import { kgToLbs } from "@/lib/utils/units"
+import { Trash2, Pencil, Check, X } from "lucide-react"
+import { kgToLbs, lbsToKg } from "@/lib/utils/units"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,15 +29,44 @@ interface WeightEntry {
 interface WeightHistoryProps {
   entries: WeightEntry[]
   onDelete: (id: string) => void
+  onEdit?: (id: string, data: { weight_kg: number; body_fat_pct: number | null; notes: string | null }) => void
 }
 
-export function WeightHistory({ entries, onDelete }: WeightHistoryProps) {
+export function WeightHistory({ entries, onDelete, onEdit }: WeightHistoryProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editWeight, setEditWeight] = useState("")
+  const [editBf, setEditBf] = useState("")
+  const [editNotes, setEditNotes] = useState("")
 
   // Sort newest first
   const sorted = [...entries].sort(
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   )
+
+  function startEdit(entry: WeightEntry) {
+    setEditingId(entry.id)
+    setEditWeight(kgToLbs(entry.weight_kg).toFixed(1))
+    setEditBf(entry.body_fat_pct?.toString() ?? "")
+    setEditNotes(entry.notes ?? "")
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditWeight("")
+    setEditBf("")
+    setEditNotes("")
+  }
+
+  function saveEdit(id: string) {
+    if (!editWeight || !onEdit) return
+    onEdit(id, {
+      weight_kg: lbsToKg(parseFloat(editWeight)),
+      body_fat_pct: editBf ? parseFloat(editBf) : null,
+      notes: editNotes.trim() || null,
+    })
+    setEditingId(null)
+  }
 
   if (sorted.length === 0) {
     return (
@@ -48,66 +78,133 @@ export function WeightHistory({ entries, onDelete }: WeightHistoryProps) {
 
   return (
     <div className="space-y-1">
-      {sorted.map((entry) => (
-        <div
-          key={entry.id}
-          className="flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-muted/50 transition-colors"
-        >
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="text-sm text-muted-foreground w-20 shrink-0">
-              {format(parseISO(entry.date), "MMM d, yyyy")}
-            </div>
-            <div className="font-medium tabular-nums">
-              {kgToLbs(entry.weight_kg).toFixed(1)} lbs
-            </div>
-            {entry.body_fat_pct !== null && (
-              <div className="text-sm text-muted-foreground tabular-nums">
-                {entry.body_fat_pct}% BF
+      {sorted.map((entry) => {
+        const isEditing = editingId === entry.id
+
+        if (isEditing && onEdit) {
+          return (
+            <div
+              key={entry.id}
+              className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2"
+            >
+              <div className="text-sm text-muted-foreground w-20 shrink-0">
+                {format(parseISO(entry.date), "MMM d, yyyy")}
               </div>
-            )}
-            {entry.notes && (
-              <div className="text-sm text-muted-foreground truncate max-w-[200px] hidden sm:block">
-                {entry.notes}
+              <Input
+                type="number"
+                step="0.1"
+                value={editWeight}
+                onChange={(e) => setEditWeight(e.target.value)}
+                className="h-7 w-20 text-sm"
+                placeholder="lbs"
+              />
+              <Input
+                type="number"
+                step="0.1"
+                value={editBf}
+                onChange={(e) => setEditBf(e.target.value)}
+                className="h-7 w-16 text-sm"
+                placeholder="BF%"
+              />
+              <Input
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                className="h-7 flex-1 text-sm hidden sm:block"
+                placeholder="Notes"
+              />
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="text-green-500 hover:text-green-600 shrink-0"
+                onClick={() => saveEdit(entry.id)}
+              >
+                <Check className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="text-muted-foreground shrink-0"
+                onClick={cancelEdit}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )
+        }
+
+        return (
+          <div
+            key={entry.id}
+            className="flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-muted/50 transition-colors"
+          >
+            <div className="flex items-center gap-4 min-w-0">
+              <div className="text-sm text-muted-foreground w-20 shrink-0">
+                {format(parseISO(entry.date), "MMM d, yyyy")}
               </div>
-            )}
-          </div>
-          <AlertDialog>
-            <AlertDialogTrigger
-              render={
+              <div className="font-medium tabular-nums">
+                {kgToLbs(entry.weight_kg).toFixed(1)} lbs
+              </div>
+              {entry.body_fat_pct !== null && (
+                <div className="text-sm text-muted-foreground tabular-nums">
+                  {entry.body_fat_pct}% BF
+                </div>
+              )}
+              {entry.notes && (
+                <div className="text-sm text-muted-foreground truncate max-w-[200px] hidden sm:block">
+                  {entry.notes}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              {onEdit && (
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  className="text-muted-foreground hover:text-destructive shrink-0"
-                />
-              }
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </AlertDialogTrigger>
-            <AlertDialogContent size="sm">
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete entry?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This will permanently remove the weight entry from{" "}
-                  {format(parseISO(entry.date), "MMM d, yyyy")}.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  variant="destructive"
-                  onClick={() => {
-                    setDeletingId(entry.id)
-                    onDelete(entry.id)
-                  }}
-                  disabled={deletingId === entry.id}
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => startEdit(entry)}
                 >
-                  {deletingId === entry.id ? "Deleting..." : "Delete"}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      ))}
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <AlertDialog>
+                <AlertDialogTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground hover:text-destructive shrink-0"
+                    />
+                  }
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </AlertDialogTrigger>
+                <AlertDialogContent size="sm">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete entry?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently remove the weight entry from{" "}
+                      {format(parseISO(entry.date), "MMM d, yyyy")}.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      variant="destructive"
+                      onClick={() => {
+                        setDeletingId(entry.id)
+                        onDelete(entry.id)
+                      }}
+                      disabled={deletingId === entry.id}
+                    >
+                      {deletingId === entry.id ? "Deleting..." : "Delete"}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

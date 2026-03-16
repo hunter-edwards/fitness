@@ -27,7 +27,7 @@ export default function SettingsPage() {
 
   // Form state
   const [displayName, setDisplayName] = useState("")
-  const [heightCm, setHeightCm] = useState("")
+  const [heightInches, setHeightInches] = useState("")
   const [dob, setDob] = useState("")
   const [gender, setGender] = useState("")
   const [activityLevel, setActivityLevel] = useState("")
@@ -44,7 +44,7 @@ export default function SettingsPage() {
         if (data) {
           setProfile(data)
           setDisplayName(data.display_name || "")
-          setHeightCm(data.height_cm?.toString() || "")
+          setHeightInches(data.height_cm ? (data.height_cm / 2.54).toFixed(1) : "")
           setDob(data.date_of_birth || "")
           setGender(data.gender || "")
           setActivityLevel(data.activity_level || "")
@@ -63,7 +63,7 @@ export default function SettingsPage() {
       .from("profiles")
       .update({
         display_name: displayName || null,
-        height_cm: heightCm ? parseFloat(heightCm) : null,
+        height_cm: heightInches ? parseFloat(heightInches) * 2.54 : null,
         date_of_birth: dob || null,
         gender: (gender as "male" | "female" | "other") || null,
         activity_level: (activityLevel as "sedentary" | "light" | "moderate" | "active" | "very_active") || null,
@@ -132,8 +132,8 @@ export default function SettingsPage() {
                     id="height"
                     type="number"
                     step="0.1"
-                    value={heightCm}
-                    onChange={(e) => setHeightCm(e.target.value)}
+                    value={heightInches}
+                    onChange={(e) => setHeightInches(e.target.value)}
                     placeholder="70"
                   />
                 </div>
