@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { WorkoutCard, type WorkoutCardData } from "@/components/workouts/workout-card"
 import { Plus, Dumbbell } from "lucide-react"
 import Link from "next/link"
+import { TodaysWorkout } from "@/components/workouts/todays-workout"
 
 export default function WorkoutsPage() {
   const { user } = useAuth()
@@ -80,6 +81,9 @@ export default function WorkoutsPage() {
             </Button>
           </Link>
         </div>
+
+        {/* Today's Scheduled Workout */}
+        <TodaysWorkout />
 
         {/* Workout list */}
         {loading ? (

@@ -15,6 +15,7 @@ import {
   Flame, ChevronRight, Plus, Zap,
 } from "lucide-react"
 import Link from "next/link"
+import { TodaysWorkout } from "@/components/workouts/todays-workout"
 
 interface DashboardData {
   latestWeight: number | null
@@ -500,6 +501,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Today's Workout */}
+        {!loading && <TodaysWorkout compact />}
 
         {/* Today's Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">

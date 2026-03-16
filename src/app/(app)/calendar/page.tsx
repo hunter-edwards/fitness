@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ChevronLeft, ChevronRight, Dumbbell, UtensilsCrossed, Scale } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { TodaysWorkout } from "@/components/workouts/todays-workout"
 
 interface DayData {
   workouts: { name: string | null; status: string }[]
@@ -169,50 +170,59 @@ export default function CalendarPage() {
 
         {/* Day Detail */}
         {selectedDate && (
-          <Card>
-            <CardHeader>
-              <CardTitle>{format(selectedDate, "EEEE, MMMM d, yyyy")}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!selectedData ? (
-                <p className="text-sm text-muted-foreground">No data recorded for this day</p>
-              ) : (
-                <>
-                  {selectedData.workouts.length > 0 && (
-                    <div className="space-y-2">
-                      {selectedData.workouts.map((w, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <Dumbbell className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm">{w.name || "Workout"}</span>
-                          <Badge
-                            variant={
-                              w.status === "completed" ? "default" :
-                              w.status === "scheduled" ? "secondary" : "destructive"
-                            }
-                            className="text-xs"
-                          >
-                            {w.status}
-                          </Badge>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {selectedData.hasNutrition && (
-                    <div className="flex items-center gap-2">
-                      <UtensilsCrossed className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">Meals logged</span>
-                    </div>
-                  )}
-                  {selectedData.hasWeight && (
-                    <div className="flex items-center gap-2">
-                      <Scale className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">Weight recorded</span>
-                    </div>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
+          <div className="space-y-3">
+            {/* Scheduled workout preview with start/skip */}
+            {selectedData?.workouts.some((w) => w.status === "scheduled") && (
+              <TodaysWorkout
+                date={format(selectedDate, "yyyy-MM-dd")}
+              />
+            )}
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{format(selectedDate, "EEEE, MMMM d, yyyy")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {!selectedData ? (
+                  <p className="text-sm text-muted-foreground">No data recorded for this day</p>
+                ) : (
+                  <>
+                    {selectedData.workouts.length > 0 && (
+                      <div className="space-y-2">
+                        {selectedData.workouts.map((w, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <Dumbbell className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">{w.name || "Workout"}</span>
+                            <Badge
+                              variant={
+                                w.status === "completed" ? "default" :
+                                w.status === "scheduled" ? "secondary" : "destructive"
+                              }
+                              className="text-xs"
+                            >
+                              {w.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {selectedData.hasNutrition && (
+                      <div className="flex items-center gap-2">
+                        <UtensilsCrossed className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm">Meals logged</span>
+                      </div>
+                    )}
+                    {selectedData.hasWeight && (
+                      <div className="flex items-center gap-2">
+                        <Scale className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm">Weight recorded</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         )}
       </div>
     </>
