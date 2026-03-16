@@ -15,7 +15,6 @@ import {
   Dumbbell,
   ChevronDown,
   ChevronUp,
-  Clock,
   X,
   CheckCircle2,
   RotateCcw,
@@ -159,15 +158,54 @@ export function TodaysWorkout({
   }
 
   async function handleStartWorkout(workout: ScheduledWorkout) {
+    if (!user) return
     setStarting(true)
 
     const grouped = groupSets(workout.workout_sets)
-
-    // Build the activeWorkout state that the active workout page expects
     const now = new Date().toISOString()
+
+    // Create a NEW session workout — the scheduled workout stays untouched
+    const { data: session, error: sessionError } = await supabase
+      .from("workouts")
+      .insert({
+        user_id: user.id,
+        date: workout.date,
+        name: workout.name,
+        status: "in_progress",
+        started_at: now,
+        plan_id: workout.plan_id,
+      })
+      .select("id")
+      .single()
+
+    if (sessionError || !session) {
+      console.error("Error creating workout session:", sessionError)
+      toast.error("Failed to start workout")
+      setStarting(false)
+      return
+    }
+
+    // Copy workout_sets from the scheduled workout to the session
+    // (so the session can be rebuilt from DB if localStorage is lost)
+    if (workout.workout_sets.length > 0) {
+      const sessionSets = workout.workout_sets.map((s) => ({
+        workout_id: session.id,
+        exercise_id: s.exercise_id,
+        set_number: s.set_number,
+        set_type: s.set_type,
+        reps: s.reps,
+        weight_kg: s.weight_kg,
+        notes: s.notes,
+        sort_order: s.sort_order,
+        completed: false,
+      }))
+      await supabase.from("workout_sets").insert(sessionSets)
+    }
+
+    // Build the activeWorkout state — sessionId is the NEW record, not the template
     const workoutState = {
       name: workout.name || `Workout - ${format(new Date(), "MMM d")}`,
-      scheduledWorkoutId: workout.id,
+      sessionId: session.id,
       startedAt: now,
       exercises: grouped.map((g) => ({
         exerciseId: g.exerciseId,
@@ -185,48 +223,39 @@ export function TodaysWorkout({
       })),
     }
 
-    // Update workout status to in_progress
-    await supabase
-      .from("workouts")
-      .update({ status: "in_progress", started_at: now })
-      .eq("id", workout.id)
-
     localStorage.setItem("activeWorkout", JSON.stringify(workoutState))
     router.push("/workouts/active")
   }
 
-  function handleResumeWorkout() {
+  function handleResumeWorkout(inProgressWorkout: ScheduledWorkout) {
     // Check if there's an active workout in localStorage
     const stored = localStorage.getItem("activeWorkout")
     if (stored) {
       router.push("/workouts/active")
     } else {
-      // If no localStorage data, we need to rebuild it from the in_progress workout
-      const inProgressWorkout = workouts.find((w) => w.status === "in_progress")
-      if (inProgressWorkout) {
-        const grouped = groupSets(inProgressWorkout.workout_sets)
-        const workoutState = {
-          name: inProgressWorkout.name || `Workout - ${format(new Date(), "MMM d")}`,
-          scheduledWorkoutId: inProgressWorkout.id,
-          startedAt: inProgressWorkout.started_at || new Date().toISOString(),
-          exercises: grouped.map((g) => ({
-            exerciseId: g.exerciseId,
-            exerciseName: g.exerciseName,
-            sets: g.sets.map((s) => ({
-              setNumber: s.set_number,
-              setType: s.set_type,
-              reps: s.reps,
-              weight: s.weight_kg
-                ? Math.round(s.weight_kg * 2.20462 * 10) / 10
-                : null,
-              rpe: null,
-              completed: false,
-            })),
+      // If no localStorage data, rebuild it from the in_progress workout in DB
+      const grouped = groupSets(inProgressWorkout.workout_sets)
+      const workoutState = {
+        name: inProgressWorkout.name || `Workout - ${format(new Date(), "MMM d")}`,
+        sessionId: inProgressWorkout.id,
+        startedAt: inProgressWorkout.started_at || new Date().toISOString(),
+        exercises: grouped.map((g) => ({
+          exerciseId: g.exerciseId,
+          exerciseName: g.exerciseName,
+          sets: g.sets.map((s) => ({
+            setNumber: s.set_number,
+            setType: s.set_type,
+            reps: s.reps,
+            weight: s.weight_kg
+              ? Math.round(s.weight_kg * 2.20462 * 10) / 10
+              : null,
+            rpe: null,
+            completed: false,
           })),
-        }
-        localStorage.setItem("activeWorkout", JSON.stringify(workoutState))
-        router.push("/workouts/active")
+        })),
       }
+      localStorage.setItem("activeWorkout", JSON.stringify(workoutState))
+      router.push("/workouts/active")
     }
   }
 
@@ -247,6 +276,11 @@ export function TodaysWorkout({
   if (workouts.length === 0) {
     return null // Don't render anything if no workouts for this date
   }
+
+  // Check if there's an active session (prevents starting a new one)
+  const hasActiveSession = workouts.some((w) => w.status === "in_progress")
+  // Check if user already completed a session today
+  const hasCompletedSession = workouts.some((w) => w.status === "completed")
 
   // Sort workouts: in_progress first, then scheduled, then completed
   const sortedWorkouts = [...workouts].sort((a, b) => {
@@ -414,15 +448,25 @@ export function TodaysWorkout({
               <div className="flex gap-2">
                 {isScheduled && (
                   <>
-                    <Button
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => handleStartWorkout(workout)}
-                      disabled={starting}
-                    >
-                      <Play className="h-3.5 w-3.5 mr-1.5" />
-                      {starting ? "Loading..." : "Start Workout"}
-                    </Button>
+                    {hasActiveSession ? (
+                      <p className="flex-1 text-xs text-muted-foreground text-center py-1.5">
+                        Finish your active workout first
+                      </p>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => handleStartWorkout(workout)}
+                        disabled={starting}
+                      >
+                        <Play className="h-3.5 w-3.5 mr-1.5" />
+                        {starting
+                          ? "Loading..."
+                          : hasCompletedSession
+                            ? "Start Again"
+                            : "Start Workout"}
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -438,7 +482,7 @@ export function TodaysWorkout({
                   <Button
                     size="sm"
                     className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white"
-                    onClick={handleResumeWorkout}
+                    onClick={() => handleResumeWorkout(workout)}
                   >
                     <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
                     Resume Workout

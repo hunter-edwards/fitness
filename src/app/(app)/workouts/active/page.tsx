@@ -43,6 +43,9 @@ interface ActiveExercise {
 interface WorkoutState {
   name: string
   exercises: ActiveExercise[]
+  /** The DB id of the session workout record (created when starting) */
+  sessionId?: string
+  /** @deprecated Use sessionId instead */
   scheduledWorkoutId?: string
   startedAt?: string
 }
@@ -266,15 +269,19 @@ export default function ActiveWorkoutPage() {
 
       let workoutId: string
 
-      if (workout.scheduledWorkoutId) {
-        // UPDATE the existing scheduled/in_progress workout record
+      // sessionId = the session record created when starting from a scheduled workout
+      // scheduledWorkoutId = legacy fallback from older localStorage data
+      const existingSessionId = workout.sessionId || workout.scheduledWorkoutId
+
+      if (existingSessionId) {
+        // UPDATE the existing session record to completed
         const { error: updateError } = await supabase
           .from("workouts")
           .update({
             ...workoutData,
             name: workout.name || null,
           })
-          .eq("id", workout.scheduledWorkoutId)
+          .eq("id", existingSessionId)
 
         if (updateError) {
           console.error("Error updating workout:", updateError)
@@ -282,9 +289,9 @@ export default function ActiveWorkoutPage() {
           return
         }
 
-        workoutId = workout.scheduledWorkoutId
+        workoutId = existingSessionId
 
-        // Delete any existing sets from the scheduled workout (they'll be replaced)
+        // Delete the planned sets (they'll be replaced with actual sets)
         await supabase
           .from("workout_sets")
           .delete()
