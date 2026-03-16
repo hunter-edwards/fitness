@@ -89,7 +89,13 @@ Rules:
     }
 
     const result = await response.json()
-    const text = result.content?.[0]?.text || ""
+    let text = (result.content?.[0]?.text || "").trim()
+
+    // Strip markdown code fences if present (e.g. ```json ... ```)
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (fenceMatch) {
+      text = fenceMatch[1].trim()
+    }
 
     // Parse JSON from response
     const parsed = JSON.parse(text)
