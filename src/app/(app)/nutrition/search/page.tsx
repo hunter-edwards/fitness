@@ -2,13 +2,14 @@
 
 import { useEffect, useState, useRef, useCallback } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { ArrowLeft, Search, Loader2 } from "lucide-react"
+import { ArrowLeft, Search, Loader2, Sparkles, X } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/hooks/use-auth"
 import { Header } from "@/components/layout/header"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
@@ -19,6 +20,15 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
+
+interface AIFoodItem {
+  name: string
+  estimated_serving_g: number
+  calories: number
+  protein_g: number
+  carbs_g: number
+  fat_g: number
+}
 
 type MealType = "breakfast" | "lunch" | "dinner" | "snack"
 
@@ -57,6 +67,13 @@ export default function FoodSearchPage() {
   const [servings, setServings] = useState(1)
   const [adding, setAdding] = useState(false)
   const [activeTab, setActiveTab] = useState<string>("my-foods")
+
+  // AI describe state
+  const [aiDescription, setAiDescription] = useState("")
+  const [aiResults, setAiResults] = useState<AIFoodItem[]>([])
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+  const [aiAdding, setAiAdding] = useState(false)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -239,6 +256,100 @@ export default function FoodSearchPage() {
     }
   }
 
+  const handleAnalyze = async () => {
+    if (!aiDescription.trim()) return
+    setAiLoading(true)
+    setAiError(null)
+    setAiResults([])
+
+    try {
+      const res = await fetch("/api/analyze-food", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: aiDescription.trim() }),
+      })
+
+      if (!res.ok) {
+        setAiError("Failed to analyze. Please try again.")
+        return
+      }
+
+      const data = await res.json()
+      setAiResults(data.items || [])
+    } catch {
+      setAiError("Failed to analyze. Please try again.")
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const handleRemoveAiItem = (index: number) => {
+    setAiResults((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleAddAllAiItems = async () => {
+    if (!user || aiResults.length === 0) return
+    setAiAdding(true)
+
+    try {
+      // Find or create meal
+      let { data: existingMeal } = await supabase
+        .from("meals")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("date", date)
+        .eq("meal_type", mealType)
+        .single()
+
+      let mealId = existingMeal?.id
+
+      if (!mealId) {
+        const { data: newMeal } = await supabase
+          .from("meals")
+          .insert({
+            user_id: user.id,
+            date,
+            meal_type: mealType,
+          })
+          .select("id")
+          .single()
+
+        mealId = newMeal?.id
+      }
+
+      if (mealId) {
+        const items = aiResults.map((item) => ({
+          meal_id: mealId!,
+          food_id: null,
+          custom_name: item.name,
+          servings: 1,
+          calories: item.calories,
+          protein_g: item.protein_g,
+          carbs_g: item.carbs_g,
+          fat_g: item.fat_g,
+        }))
+
+        await supabase.from("meal_items").insert(items)
+      }
+
+      router.push("/nutrition")
+    } catch {
+      // Handle error
+    } finally {
+      setAiAdding(false)
+    }
+  }
+
+  const aiTotals = aiResults.reduce(
+    (acc, item) => ({
+      calories: acc.calories + item.calories,
+      protein: acc.protein + item.protein_g,
+      carbs: acc.carbs + item.carbs_g,
+      fat: acc.fat + item.fat_g,
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  )
+
   const renderFoodItem = (food: FoodResult) => (
     <button
       key={`${food.source}-${food.id || food.off_id || food.name}`}
@@ -319,6 +430,10 @@ export default function FoodSearchPage() {
             <TabsTrigger value="search" className="flex-1">
               Search
             </TabsTrigger>
+            <TabsTrigger value="ai" className="flex-1">
+              <Sparkles className="h-3.5 w-3.5 mr-1" />
+              AI
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="my-foods">
@@ -375,6 +490,121 @@ export default function FoodSearchPage() {
                   <CardContent className="py-8 text-center">
                     <p className="text-sm text-muted-foreground">
                       Search the OpenFoodFacts database
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="ai">
+            <div className="space-y-4 mt-3">
+              <div className="space-y-2">
+                <Label htmlFor="ai-description">Describe what you ate</Label>
+                <Textarea
+                  id="ai-description"
+                  placeholder='e.g. "smoothie made with splash of whole milk, 1 banana, peanut butter, ice, 2 scoops whey protein"'
+                  value={aiDescription}
+                  onChange={(e) => setAiDescription(e.target.value)}
+                  rows={3}
+                />
+                <Button
+                  onClick={handleAnalyze}
+                  disabled={aiLoading || !aiDescription.trim()}
+                  className="w-full"
+                >
+                  {aiLoading ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4 mr-1" />
+                  )}
+                  {aiLoading ? "Analyzing..." : "Analyze"}
+                </Button>
+              </div>
+
+              {aiError && (
+                <Card>
+                  <CardContent className="py-4 text-center">
+                    <p className="text-sm text-destructive">{aiError}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {aiResults.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Estimated breakdown
+                  </p>
+                  {aiResults.map((item, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-3"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {item.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          ~{item.estimated_serving_g}g
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 ml-2">
+                        <div className="text-right">
+                          <p className="text-sm font-semibold tabular-nums">
+                            {item.calories} cal
+                          </p>
+                          <p className="text-xs text-muted-foreground tabular-nums">
+                            P: {item.protein_g}g &middot; C: {item.carbs_g}g
+                            &middot; F: {item.fat_g}g
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveAiItem(index)}
+                          className="text-muted-foreground hover:text-destructive p-1"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Totals */}
+                  <div className="rounded-lg border px-3 py-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold">Total</p>
+                      <div className="text-right">
+                        <p className="text-sm font-semibold tabular-nums">
+                          {Math.round(aiTotals.calories)} cal
+                        </p>
+                        <p className="text-xs text-muted-foreground tabular-nums">
+                          P: {Math.round(aiTotals.protein * 10) / 10}g &middot;
+                          C: {Math.round(aiTotals.carbs * 10) / 10}g &middot; F:{" "}
+                          {Math.round(aiTotals.fat * 10) / 10}g
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={handleAddAllAiItems}
+                    disabled={aiAdding}
+                    className="w-full"
+                    size="lg"
+                  >
+                    {aiAdding && (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    )}
+                    Add All to {mealLabels[mealType]}
+                  </Button>
+                </div>
+              )}
+
+              {!aiLoading && aiResults.length === 0 && !aiError && (
+                <Card>
+                  <CardContent className="py-8 text-center">
+                    <Sparkles className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                      Describe your food and AI will estimate the nutrition
                     </p>
                   </CardContent>
                 </Card>
