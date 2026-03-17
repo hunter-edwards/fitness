@@ -96,6 +96,7 @@ export function MealCard({
   const [expanded, setExpanded] = useState(items.length > 0)
   const [editingItem, setEditingItem] = useState<MealItem | null>(null)
   const [editServings, setEditServings] = useState(1)
+  const [editServingsDisplay, setEditServingsDisplay] = useState("1")
   const [editCalories, setEditCalories] = useState(0)
   const [editProtein, setEditProtein] = useState(0)
   const [editCarbs, setEditCarbs] = useState(0)
@@ -116,6 +117,7 @@ export function MealCard({
   const handleEditClick = (item: MealItem) => {
     setEditingItem(item)
     setEditServings(item.servings || 1)
+    setEditServingsDisplay(String(item.servings || 1))
     setEditCalories(item.calories || 0)
     setEditProtein(item.protein_g || 0)
     setEditCarbs(item.carbs_g || 0)
@@ -140,6 +142,7 @@ export function MealCard({
     const ratio =
       newServings / (editingItem.servings || 1)
     setEditServings(newServings)
+    setEditServingsDisplay(String(newServings))
     setEditCalories(Math.round((editingItem.calories || 0) * ratio))
     setEditProtein(
       Math.round((editingItem.protein_g || 0) * ratio * 10) / 10
@@ -297,12 +300,13 @@ export function MealCard({
                   type="number"
                   min={0.25}
                   step={0.25}
-                  value={editServings}
-                  onChange={(e) =>
-                    handleEditServingsChange(
-                      Math.max(0.25, parseFloat(e.target.value) || 1)
-                    )
-                  }
+                  value={editServingsDisplay}
+                  onChange={(e) => setEditServingsDisplay(e.target.value)}
+                  onBlur={() => {
+                    const parsed = parseFloat(editServingsDisplay)
+                    const value = isNaN(parsed) || parsed < 0.25 ? 0.25 : parsed
+                    handleEditServingsChange(value)
+                  }}
                 />
               </div>
 
