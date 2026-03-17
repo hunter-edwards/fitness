@@ -10,45 +10,7 @@ interface FoodItem {
   fat_g: number
 }
 
-export async function POST(request: NextRequest) {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY not configured" },
-      { status: 500 }
-    )
-  }
-
-  try {
-    const { description } = await request.json()
-
-    if (!description || typeof description !== "string" || description.trim().length === 0) {
-      return NextResponse.json(
-        { error: "Description is required" },
-        { status: 400 }
-      )
-    }
-
-    const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1024,
-        system: `You are a nutrition estimation assistant. The user will describe food they ate. Break it down into individual ingredients/components, estimate reasonable serving sizes from context clues (e.g. "splash" of milk ≈ 30ml, "2 scoops whey protein" ≈ 62g), and provide estimated nutritional info for each.
+const SYSTEM_PROMPT = `You are a nutrition estimation assistant. The user will describe food they ate or show you a photo of food. Break it down into individual ingredients/components, estimate reasonable serving sizes from context clues (e.g. "splash" of milk ≈ 30ml, "2 scoops whey protein" ≈ 62g), and provide estimated nutritional info for each.
 
 Respond with ONLY valid JSON in this exact format, no other text:
 {
@@ -69,11 +31,90 @@ Rules:
 - Round numbers to whole values for calories, one decimal for macros
 - If an ingredient has negligible nutrition (like ice, water), still include it with zeros
 - Use common sense for vague quantities ("some", "a bit", "splash")
-- Name each item clearly (e.g. "Whole Milk" not just "milk")`,
+- Name each item clearly (e.g. "Whole Milk" not just "milk")
+- For photos: identify all visible food items and estimate portions based on visual cues (plate size, item proportions, etc.)`
+
+export async function POST(request: NextRequest) {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "ANTHROPIC_API_KEY not configured" },
+      { status: 500 }
+    )
+  }
+
+  try {
+    const body = await request.json()
+    const { description, image } = body
+
+    const hasDescription = description && typeof description === "string" && description.trim().length > 0
+    const hasImage = image && typeof image === "string"
+
+    if (!hasDescription && !hasImage) {
+      return NextResponse.json(
+        { error: "Description or image is required" },
+        { status: 400 }
+      )
+    }
+
+    const supabase = await createClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    // Build message content based on input type
+    const content: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = []
+
+    if (hasImage) {
+      // Extract base64 data and media type from data URL
+      const match = image.match(/^data:(image\/\w+);base64,(.+)$/)
+      if (!match) {
+        return NextResponse.json(
+          { error: "Invalid image format" },
+          { status: 400 }
+        )
+      }
+      content.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: match[1],
+          data: match[2],
+        },
+      })
+    }
+
+    if (hasDescription) {
+      content.push({
+        type: "text",
+        text: `Estimate the nutrition for this food: ${description.trim()}`,
+      })
+    } else {
+      content.push({
+        type: "text",
+        text: "Identify all the food in this photo and estimate the nutrition for each item.",
+      })
+    }
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
         messages: [
           {
             role: "user",
-            content: `Estimate the nutrition for this food: ${description.trim()}`,
+            content,
           },
         ],
       }),

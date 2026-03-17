@@ -106,6 +106,33 @@ export default function NutritionPage() {
     }
   }
 
+  const handleUpdate = async (
+    itemId: string,
+    updates: {
+      servings: number
+      calories: number
+      protein_g: number
+      carbs_g: number
+      fat_g: number
+    }
+  ) => {
+    const { error } = await supabase
+      .from("meal_items")
+      .update(updates)
+      .eq("id", itemId)
+
+    if (!error) {
+      setMeals((prev) =>
+        prev.map((meal) => ({
+          ...meal,
+          meal_items: meal.meal_items.map((item) =>
+            item.id === itemId ? { ...item, ...updates } : item
+          ),
+        }))
+      )
+    }
+  }
+
   const getMealItems = (type: MealType): MealItem[] => {
     const meal = meals.find((m) => m.meal_type === type)
     return meal?.meal_items || []
@@ -230,6 +257,7 @@ export default function NutritionPage() {
                 date={dateStr}
                 items={getMealItems(type)}
                 onDelete={handleDelete}
+                onUpdate={handleUpdate}
               />
             ))}
           </div>

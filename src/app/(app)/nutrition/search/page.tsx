@@ -2,7 +2,17 @@
 
 import { useEffect, useState, useRef, useCallback } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { ArrowLeft, Search, Loader2, Sparkles, X } from "lucide-react"
+import {
+  ArrowLeft,
+  Search,
+  Loader2,
+  Sparkles,
+  X,
+  Camera,
+  Type,
+  Minus,
+  Plus,
+} from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/hooks/use-auth"
@@ -28,6 +38,7 @@ interface AIFoodItem {
   protein_g: number
   carbs_g: number
   fat_g: number
+  servings: number
 }
 
 type MealType = "breakfast" | "lunch" | "dinner" | "snack"
@@ -68,12 +79,16 @@ export default function FoodSearchPage() {
   const [adding, setAdding] = useState(false)
   const [activeTab, setActiveTab] = useState<string>("my-foods")
 
-  // AI describe state
+  // AI state
+  const [aiMode, setAiMode] = useState<"text" | "camera">("text")
   const [aiDescription, setAiDescription] = useState("")
+  const [aiImagePreview, setAiImagePreview] = useState<string | null>(null)
+  const [aiImageData, setAiImageData] = useState<string | null>(null)
   const [aiResults, setAiResults] = useState<AIFoodItem[]>([])
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
   const [aiAdding, setAiAdding] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -256,17 +271,49 @@ export default function FoodSearchPage() {
     }
   }
 
+  const handleImageCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string
+      setAiImagePreview(dataUrl)
+      setAiImageData(dataUrl)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleClearImage = () => {
+    setAiImagePreview(null)
+    setAiImageData(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
+    }
+  }
+
   const handleAnalyze = async () => {
-    if (!aiDescription.trim()) return
+    const hasText = aiMode === "text" && aiDescription.trim()
+    const hasImage = aiMode === "camera" && aiImageData
+
+    if (!hasText && !hasImage) return
     setAiLoading(true)
     setAiError(null)
     setAiResults([])
 
     try {
+      const body: { description?: string; image?: string } = {}
+      if (aiMode === "text" && aiDescription.trim()) {
+        body.description = aiDescription.trim()
+      }
+      if (aiMode === "camera" && aiImageData) {
+        body.image = aiImageData
+      }
+
       const res = await fetch("/api/analyze-food", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: aiDescription.trim() }),
+        body: JSON.stringify(body),
       })
 
       if (!res.ok) {
@@ -275,7 +322,13 @@ export default function FoodSearchPage() {
       }
 
       const data = await res.json()
-      setAiResults(data.items || [])
+      const items = (data.items || []).map(
+        (item: Omit<AIFoodItem, "servings">) => ({
+          ...item,
+          servings: 1,
+        })
+      )
+      setAiResults(items)
     } catch {
       setAiError("Failed to analyze. Please try again.")
     } finally {
@@ -285,6 +338,14 @@ export default function FoodSearchPage() {
 
   const handleRemoveAiItem = (index: number) => {
     setAiResults((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleAiItemServingsChange = (index: number, newServings: number) => {
+    setAiResults((prev) =>
+      prev.map((item, i) =>
+        i === index ? { ...item, servings: Math.max(0.25, newServings) } : item
+      )
+    )
   }
 
   const handleAddAllAiItems = async () => {
@@ -322,11 +383,12 @@ export default function FoodSearchPage() {
           meal_id: mealId!,
           food_id: null,
           custom_name: item.name,
-          servings: 1,
-          calories: item.calories,
-          protein_g: item.protein_g,
-          carbs_g: item.carbs_g,
-          fat_g: item.fat_g,
+          servings: item.servings,
+          calories: Math.round(item.calories * item.servings),
+          protein_g:
+            Math.round(item.protein_g * item.servings * 10) / 10,
+          carbs_g: Math.round(item.carbs_g * item.servings * 10) / 10,
+          fat_g: Math.round(item.fat_g * item.servings * 10) / 10,
         }))
 
         await supabase.from("meal_items").insert(items)
@@ -342,10 +404,10 @@ export default function FoodSearchPage() {
 
   const aiTotals = aiResults.reduce(
     (acc, item) => ({
-      calories: acc.calories + item.calories,
-      protein: acc.protein + item.protein_g,
-      carbs: acc.carbs + item.carbs_g,
-      fat: acc.fat + item.fat_g,
+      calories: acc.calories + item.calories * item.servings,
+      protein: acc.protein + item.protein_g * item.servings,
+      carbs: acc.carbs + item.carbs_g * item.servings,
+      fat: acc.fat + item.fat_g * item.servings,
     }),
     { calories: 0, protein: 0, carbs: 0, fat: 0 }
   )
@@ -386,6 +448,10 @@ export default function FoodSearchPage() {
     dinner: "Dinner",
     snack: "Snack",
   }
+
+  const canAnalyze =
+    (aiMode === "text" && aiDescription.trim().length > 0) ||
+    (aiMode === "camera" && !!aiImageData)
 
   return (
     <>
@@ -499,28 +565,99 @@ export default function FoodSearchPage() {
 
           <TabsContent value="ai">
             <div className="space-y-4 mt-3">
-              <div className="space-y-2">
-                <Label htmlFor="ai-description">Describe what you ate</Label>
-                <Textarea
-                  id="ai-description"
-                  placeholder='e.g. "smoothie made with splash of whole milk, 1 banana, peanut butter, ice, 2 scoops whey protein"'
-                  value={aiDescription}
-                  onChange={(e) => setAiDescription(e.target.value)}
-                  rows={3}
-                />
+              {/* Mode toggle: Text vs Camera */}
+              <div className="flex gap-2">
                 <Button
-                  onClick={handleAnalyze}
-                  disabled={aiLoading || !aiDescription.trim()}
-                  className="w-full"
+                  variant={aiMode === "text" ? "default" : "outline"}
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => setAiMode("text")}
                 >
-                  {aiLoading ? (
-                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-4 w-4 mr-1" />
-                  )}
-                  {aiLoading ? "Analyzing..." : "Analyze"}
+                  <Type className="h-4 w-4 mr-1.5" />
+                  Describe It
+                </Button>
+                <Button
+                  variant={aiMode === "camera" ? "default" : "outline"}
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => setAiMode("camera")}
+                >
+                  <Camera className="h-4 w-4 mr-1.5" />
+                  Take Photo
                 </Button>
               </div>
+
+              {/* Text input mode */}
+              {aiMode === "text" && (
+                <div className="space-y-2">
+                  <Label htmlFor="ai-description">
+                    Describe what you ate
+                  </Label>
+                  <Textarea
+                    id="ai-description"
+                    placeholder='e.g. "smoothie made with splash of whole milk, 1 banana, peanut butter, ice, 2 scoops whey protein"'
+                    value={aiDescription}
+                    onChange={(e) => setAiDescription(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+              )}
+
+              {/* Camera input mode */}
+              {aiMode === "camera" && (
+                <div className="space-y-2">
+                  <Label>Take a photo of your food</Label>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleImageCapture}
+                  />
+                  {aiImagePreview ? (
+                    <div className="relative">
+                      <img
+                        src={aiImagePreview}
+                        alt="Food photo"
+                        className="w-full rounded-lg object-cover max-h-64"
+                      />
+                      <Button
+                        variant="secondary"
+                        size="icon-sm"
+                        className="absolute top-2 right-2"
+                        onClick={handleClearImage}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-muted-foreground/25 py-12 hover:border-muted-foreground/50 transition-colors"
+                    >
+                      <Camera className="h-8 w-8 text-muted-foreground" />
+                      <p className="text-sm text-muted-foreground">
+                        Tap to take a photo or choose from gallery
+                      </p>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Analyze button */}
+              <Button
+                onClick={handleAnalyze}
+                disabled={aiLoading || !canAnalyze}
+                className="w-full"
+              >
+                {aiLoading ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 mr-1" />
+                )}
+                {aiLoading ? "Analyzing..." : "Analyze"}
+              </Button>
 
               {aiError && (
                 <Card>
@@ -538,32 +675,90 @@ export default function FoodSearchPage() {
                   {aiResults.map((item, index) => (
                     <div
                       key={index}
-                      className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-3"
+                      className="rounded-lg bg-muted/50 px-3 py-3 space-y-2"
                     >
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {item.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          ~{item.estimated_serving_g}g
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 ml-2">
-                        <div className="text-right">
-                          <p className="text-sm font-semibold tabular-nums">
-                            {item.calories} cal
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {item.name}
                           </p>
-                          <p className="text-xs text-muted-foreground tabular-nums">
-                            P: {item.protein_g}g &middot; C: {item.carbs_g}g
-                            &middot; F: {item.fat_g}g
+                          <p className="text-xs text-muted-foreground">
+                            ~{item.estimated_serving_g}g per serving
                           </p>
                         </div>
-                        <button
-                          onClick={() => handleRemoveAiItem(index)}
-                          className="text-muted-foreground hover:text-destructive p-1"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="flex items-center gap-2 ml-2">
+                          <div className="text-right">
+                            <p className="text-sm font-semibold tabular-nums">
+                              {Math.round(item.calories * item.servings)} cal
+                            </p>
+                            <p className="text-xs text-muted-foreground tabular-nums">
+                              P:{" "}
+                              {Math.round(
+                                item.protein_g * item.servings * 10
+                              ) / 10}
+                              g &middot; C:{" "}
+                              {Math.round(
+                                item.carbs_g * item.servings * 10
+                              ) / 10}
+                              g &middot; F:{" "}
+                              {Math.round(item.fat_g * item.servings * 10) /
+                                10}
+                              g
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveAiItem(index)}
+                            className="text-muted-foreground hover:text-destructive p-1"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      {/* Servings control */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          Servings:
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="outline"
+                            size="icon-xs"
+                            onClick={() =>
+                              handleAiItemServingsChange(
+                                index,
+                                item.servings - 0.25
+                              )
+                            }
+                            disabled={item.servings <= 0.25}
+                          >
+                            <Minus className="h-3 w-3" />
+                          </Button>
+                          <Input
+                            type="number"
+                            min={0.25}
+                            step={0.25}
+                            value={item.servings}
+                            onChange={(e) =>
+                              handleAiItemServingsChange(
+                                index,
+                                parseFloat(e.target.value) || 1
+                              )
+                            }
+                            className="h-7 w-16 text-center text-sm px-1"
+                          />
+                          <Button
+                            variant="outline"
+                            size="icon-xs"
+                            onClick={() =>
+                              handleAiItemServingsChange(
+                                index,
+                                item.servings + 0.25
+                              )
+                            }
+                          >
+                            <Plus className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -604,7 +799,9 @@ export default function FoodSearchPage() {
                   <CardContent className="py-8 text-center">
                     <Sparkles className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
-                      Describe your food and AI will estimate the nutrition
+                      {aiMode === "text"
+                        ? "Describe your food and AI will estimate the nutrition"
+                        : "Take a photo and AI will identify the food and estimate nutrition"}
                     </p>
                   </CardContent>
                 </Card>
