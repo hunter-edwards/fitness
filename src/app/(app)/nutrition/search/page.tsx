@@ -12,6 +12,7 @@ import {
   Type,
   Minus,
   Plus,
+  BookOpen,
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
@@ -30,6 +31,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { toast } from "sonner"
 
 interface AIFoodItem {
   name: string
@@ -88,6 +90,9 @@ export default function FoodSearchPage() {
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
   const [aiAdding, setAiAdding] = useState(false)
+  const [recipeDialogOpen, setRecipeDialogOpen] = useState(false)
+  const [recipeName, setRecipeName] = useState("")
+  const [recipeSaving, setRecipeSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -399,6 +404,91 @@ export default function FoodSearchPage() {
       // Handle error
     } finally {
       setAiAdding(false)
+    }
+  }
+
+  const handleSaveAsRecipe = async () => {
+    if (!user || !recipeName.trim() || aiResults.length === 0) return
+    setRecipeSaving(true)
+
+    try {
+      const totals = aiResults.reduce(
+        (acc, item) => ({
+          calories: acc.calories + item.calories * item.servings,
+          protein: acc.protein + item.protein_g * item.servings,
+          carbs: acc.carbs + item.carbs_g * item.servings,
+          fat: acc.fat + item.fat_g * item.servings,
+        }),
+        { calories: 0, protein: 0, carbs: 0, fat: 0 }
+      )
+
+      // Create the parent recipe food
+      const { data: recipe, error: recipeError } = await supabase
+        .from("foods")
+        .insert({
+          user_id: user.id,
+          name: recipeName.trim(),
+          serving_size_g: aiResults.reduce(
+            (sum, item) => sum + item.estimated_serving_g * item.servings,
+            0
+          ),
+          serving_label: "1 recipe",
+          calories_per_serving: Math.round(totals.calories),
+          protein_g: Math.round(totals.protein * 10) / 10,
+          carbs_g: Math.round(totals.carbs * 10) / 10,
+          fat_g: Math.round(totals.fat * 10) / 10,
+          is_custom: true,
+          is_recipe: true,
+          is_favorite: false,
+        })
+        .select("id")
+        .single()
+
+      if (recipeError || !recipe) throw recipeError
+
+      // Create ingredient foods + link them
+      for (let i = 0; i < aiResults.length; i++) {
+        const item = aiResults[i]
+
+        // Create each ingredient as a food
+        const { data: ingredientFood } = await supabase
+          .from("foods")
+          .insert({
+            user_id: user.id,
+            name: item.name,
+            serving_size_g: item.estimated_serving_g,
+            serving_label: `${item.estimated_serving_g}g`,
+            calories_per_serving: item.calories,
+            protein_g: item.protein_g,
+            carbs_g: item.carbs_g,
+            fat_g: item.fat_g,
+            is_custom: true,
+            is_favorite: false,
+          })
+          .select("id")
+          .single()
+
+        // Link as ingredient
+        await supabase.from("food_ingredients").insert({
+          parent_food_id: recipe.id,
+          ingredient_food_id: ingredientFood?.id || null,
+          custom_name: item.name,
+          servings: item.servings,
+          calories: item.calories,
+          protein_g: item.protein_g,
+          carbs_g: item.carbs_g,
+          fat_g: item.fat_g,
+          sort_order: i,
+        })
+      }
+
+      toast.success("Recipe saved to My Foods")
+      setRecipeDialogOpen(false)
+      setRecipeName("")
+    } catch {
+      toast.error("Failed to save recipe")
+    } finally {
+      setRecipeSaving(false)
     }
   }
 
@@ -780,17 +870,27 @@ export default function FoodSearchPage() {
                     </div>
                   </div>
 
-                  <Button
-                    onClick={handleAddAllAiItems}
-                    disabled={aiAdding}
-                    className="w-full"
-                    size="lg"
-                  >
-                    {aiAdding && (
-                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                    )}
-                    Add All to {mealLabels[mealType]}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleAddAllAiItems}
+                      disabled={aiAdding}
+                      className="flex-1"
+                      size="lg"
+                    >
+                      {aiAdding && (
+                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      )}
+                      Add All to {mealLabels[mealType]}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="lg"
+                      onClick={() => setRecipeDialogOpen(true)}
+                    >
+                      <BookOpen className="h-4 w-4 mr-1" />
+                      Save as Recipe
+                    </Button>
+                  </div>
                 </div>
               )}
 
@@ -810,6 +910,66 @@ export default function FoodSearchPage() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Save as Recipe dialog */}
+      <Dialog open={recipeDialogOpen} onOpenChange={setRecipeDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save as Recipe</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="recipe-name">Recipe Name</Label>
+              <Input
+                id="recipe-name"
+                placeholder="e.g. Chicken Rice Bowl"
+                value={recipeName}
+                onChange={(e) => setRecipeName(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium text-muted-foreground">
+                Ingredients ({aiResults.length})
+              </p>
+              {aiResults.map((item, i) => (
+                <div
+                  key={i}
+                  className="flex justify-between text-sm rounded-md bg-muted/50 px-2 py-1.5"
+                >
+                  <span className="truncate">{item.name}</span>
+                  <span className="text-muted-foreground tabular-nums shrink-0 ml-2">
+                    {Math.round(item.calories * item.servings)} cal
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="flex justify-between text-sm">
+                <span className="font-semibold">Total</span>
+                <span className="font-semibold tabular-nums">
+                  {Math.round(aiTotals.calories)} cal &middot; P:{" "}
+                  {Math.round(aiTotals.protein * 10) / 10}g &middot; C:{" "}
+                  {Math.round(aiTotals.carbs * 10) / 10}g &middot; F:{" "}
+                  {Math.round(aiTotals.fat * 10) / 10}g
+                </span>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleSaveAsRecipe}
+              disabled={recipeSaving || !recipeName.trim()}
+              className="w-full sm:w-auto"
+            >
+              {recipeSaving && (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              )}
+              Save Recipe
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Serving size dialog */}
       <Dialog
