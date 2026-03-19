@@ -24,6 +24,7 @@ import {
   Calendar,
   Play,
   ArrowLeft,
+  AlertTriangle,
   CalendarPlus,
   Loader2,
 } from "lucide-react"
@@ -82,6 +83,8 @@ export default function PlanDetailPage() {
   const [scheduling, setScheduling] = useState(false)
   const [showScheduleForm, setShowScheduleForm] = useState(false)
   const [startDate, setStartDate] = useState(format(new Date(), "yyyy-MM-dd"))
+  const [existingCount, setExistingCount] = useState(0)
+  const [duplicateCount, setDuplicateCount] = useState(0)
 
   useEffect(() => {
     if (!user || !id) return
@@ -143,6 +146,33 @@ export default function PlanDetailPage() {
         setWeeks(sorted)
       }
 
+      // Check for existing scheduled workouts from this plan
+      const { count } = await supabase
+        .from("workouts")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user!.id)
+        .eq("plan_id", id)
+        .eq("status", "scheduled")
+      setExistingCount(count || 0)
+
+      // After fetching existing scheduled count, check for duplicates
+      const { data: scheduledForDupes } = await supabase
+        .from("workouts")
+        .select("id, date, name")
+        .eq("user_id", user!.id)
+        .eq("plan_id", id)
+        .eq("status", "scheduled")
+
+      if (scheduledForDupes) {
+        const groups = new Map<string, number>()
+        for (const w of scheduledForDupes) {
+          const key = `${w.date}|${w.name}`
+          groups.set(key, (groups.get(key) || 0) + 1)
+        }
+        const dupeCount = Array.from(groups.values()).reduce((sum, count) => sum + Math.max(0, count - 1), 0)
+        setDuplicateCount(dupeCount)
+      }
+
       setLoading(false)
     }
 
@@ -175,6 +205,65 @@ export default function PlanDetailPage() {
     if (data) setPlan(data as Plan)
   }
 
+  async function handleRemoveDuplicates() {
+    if (!plan || !user) return
+    setScheduling(true)
+
+    try {
+      const supabase = supabaseRef.current
+
+      // Find all scheduled workouts from this plan, grouped by date+name
+      const { data: scheduled } = await supabase
+        .from("workouts")
+        .select("id, date, name, created_at")
+        .eq("user_id", user.id)
+        .eq("plan_id", plan.id)
+        .eq("status", "scheduled")
+        .order("created_at", { ascending: true })
+
+      if (!scheduled || scheduled.length === 0) {
+        toast.info("No scheduled workouts found for this plan")
+        return
+      }
+
+      // Group by date+name, keep the first (oldest) of each group
+      const groups = new Map<string, typeof scheduled>()
+      for (const w of scheduled) {
+        const key = `${w.date}|${w.name}`
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key)!.push(w)
+      }
+
+      const duplicateIds: string[] = []
+      for (const [, group] of groups) {
+        // Keep the first, delete the rest
+        for (let i = 1; i < group.length; i++) {
+          duplicateIds.push(group[i].id)
+        }
+      }
+
+      if (duplicateIds.length === 0) {
+        toast.info("No duplicate workouts found")
+        return
+      }
+
+      // Delete workout_sets for duplicates first, then the workouts
+      for (const id of duplicateIds) {
+        await supabase.from("workout_sets").delete().eq("workout_id", id)
+        await supabase.from("workouts").delete().eq("id", id)
+      }
+
+      toast.success(`Removed ${duplicateIds.length} duplicate workouts`)
+      setExistingCount((prev) => prev - duplicateIds.length)
+      setDuplicateCount(0)
+    } catch (err) {
+      console.error("Remove duplicates error:", err)
+      toast.error("Failed to remove duplicates")
+    } finally {
+      setScheduling(false)
+    }
+  }
+
   async function handleSchedule() {
     if (!plan || !user || weeks.length === 0) return
     setScheduling(true)
@@ -183,6 +272,21 @@ export default function PlanDetailPage() {
       const supabase = supabaseRef.current
       const planStart = new Date(startDate + "T00:00:00")
       let created = 0
+
+      // Check for existing scheduled workouts from this plan and remove them first
+      const { data: existing } = await supabase
+        .from("workouts")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("plan_id", plan.id)
+        .eq("status", "scheduled")
+
+      if (existing && existing.length > 0) {
+        for (const w of existing) {
+          await supabase.from("workout_sets").delete().eq("workout_id", w.id)
+          await supabase.from("workouts").delete().eq("id", w.id)
+        }
+      }
 
       for (const week of weeks) {
         // Calculate the start of this week (week 1 = startDate's week, etc.)
@@ -280,6 +384,7 @@ export default function PlanDetailPage() {
       }
 
       toast.success(`Scheduled ${created} workouts to your calendar!`)
+      setExistingCount(created)
       setShowScheduleForm(false)
     } catch (err) {
       console.error("Schedule error:", err)
@@ -408,6 +513,33 @@ export default function PlanDetailPage() {
           </div>
         </div>
 
+        {/* Duplicate warning banner */}
+        {duplicateCount > 0 && (
+          <Card className="border-amber-500/50 bg-amber-500/10">
+            <CardContent className="py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
+                <div>
+                  <p className="text-sm font-medium">
+                    {duplicateCount} duplicate workout{duplicateCount !== 1 ? "s" : ""} detected
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    This plan was likely scheduled more than once
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRemoveDuplicates}
+                disabled={scheduling}
+              >
+                Remove Duplicates
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Schedule form */}
         {showScheduleForm && (
           <Card className="border-primary/50">
@@ -418,8 +550,36 @@ export default function PlanDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {existingCount > 0 && (
+                <div className="rounded-lg border border-yellow-500/50 bg-yellow-500/10 p-3 space-y-2">
+                  <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
+                    This plan already has {existingCount} scheduled workouts on your calendar.
+                  </p>
+                  {existingCount > totalWorkouts && (
+                    <p className="text-xs text-yellow-600 dark:text-yellow-500">
+                      That&apos;s more than the {totalWorkouts} workouts in this plan — looks like it was scheduled multiple times.
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleRemoveDuplicates}
+                      disabled={scheduling}
+                    >
+                      {scheduling ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="mr-2 h-4 w-4" />
+                      )}
+                      Remove Duplicates
+                    </Button>
+                  </div>
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
-                This will create <strong>{totalWorkouts} scheduled workouts</strong> on your calendar
+                This will {existingCount > 0 ? "replace your existing scheduled workouts and create" : "create"}{" "}
+                <strong>{totalWorkouts} scheduled workouts</strong> on your calendar
                 starting from the week you choose. Each workout will be placed on the correct day
                 of the week with all exercises pre-loaded.
               </p>
@@ -443,7 +603,7 @@ export default function PlanDetailPage() {
                   ) : (
                     <>
                       <CalendarPlus className="mr-2 h-4 w-4" />
-                      Schedule {totalWorkouts} Workouts
+                      {existingCount > 0 ? "Reschedule" : "Schedule"} {totalWorkouts} Workouts
                     </>
                   )}
                 </Button>
