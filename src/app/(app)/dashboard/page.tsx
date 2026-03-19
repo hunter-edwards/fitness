@@ -16,6 +16,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { TodaysWorkout } from "@/components/workouts/todays-workout"
+import { DailyBriefing } from "@/components/dashboard/daily-briefing"
 
 interface DashboardData {
   latestWeight: number | null
@@ -470,6 +471,9 @@ export default function DashboardPage() {
             <Skeleton className="h-20 flex-1" />
           </div>
         )}
+
+        {/* Daily Briefing */}
+        <DailyBriefing />
 
         {/* Quick Actions */}
         {!loading && quickActions.length > 0 && (
