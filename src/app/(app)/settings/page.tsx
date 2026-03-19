@@ -11,7 +11,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { Loader2, LogOut, Save } from "lucide-react"
+import { Loader2, LogOut, Save, Copy, RefreshCw, Smartphone } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 
@@ -33,6 +34,12 @@ export default function SettingsPage() {
   const [activityLevel, setActivityLevel] = useState("")
   const [unitSystem, setUnitSystem] = useState("imperial")
 
+  // Apple Health sync state
+  const [syncToken, setSyncToken] = useState<string | null>(null)
+  const [syncActive, setSyncActive] = useState(false)
+  const [lastSynced, setLastSynced] = useState<string | null>(null)
+  const [generatingToken, setGeneratingToken] = useState(false)
+
   useEffect(() => {
     if (!user) return
     supabase
@@ -51,6 +58,20 @@ export default function SettingsPage() {
           setUnitSystem(data.unit_system || "imperial")
         }
         setLoading(false)
+      })
+
+    // Fetch sync token
+    supabase
+      .from("health_sync_tokens")
+      .select("token, is_active, last_synced_at")
+      .eq("user_id", user.id)
+      .limit(1)
+      .then(({ data }) => {
+        if (data && data.length > 0) {
+          setSyncToken(data[0].token)
+          setSyncActive(data[0].is_active)
+          setLastSynced(data[0].last_synced_at)
+        }
       })
   }, [user, supabase])
 
@@ -84,6 +105,51 @@ export default function SettingsPage() {
     await supabase.auth.signOut()
     router.push("/login")
     router.refresh()
+  }
+
+  async function generateSyncToken() {
+    if (!user) return
+    setGeneratingToken(true)
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+
+    if (syncToken) {
+      // Regenerate: update existing
+      await supabase
+        .from("health_sync_tokens")
+        .update({ token, is_active: true })
+        .eq("user_id", user.id)
+    } else {
+      // Create new
+      await supabase.from("health_sync_tokens").insert({
+        user_id: user.id,
+        token,
+        is_active: true,
+      })
+    }
+
+    setSyncToken(token)
+    setSyncActive(true)
+    setGeneratingToken(false)
+    toast.success(syncToken ? "Token regenerated" : "Sync token created")
+  }
+
+  async function toggleSyncActive(active: boolean) {
+    if (!user) return
+    setSyncActive(active)
+    await supabase
+      .from("health_sync_tokens")
+      .update({ is_active: active })
+      .eq("user_id", user.id)
+    toast.success(active ? "Sync enabled" : "Sync disabled")
+  }
+
+  function copyToken() {
+    if (syncToken) {
+      navigator.clipboard.writeText(syncToken)
+      toast.success("Token copied to clipboard")
+    }
   }
 
   if (loading) {
@@ -188,6 +254,112 @@ export default function SettingsPage() {
                 Save Settings
               </Button>
             </form>
+          </CardContent>
+        </Card>
+
+        <Separator />
+
+        {/* Apple Health Sync */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5" />
+              Apple Health Sync
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Sync steps, calories, and activity data from Apple Health using an
+              iOS Shortcut. Generate a token below and use it in the Shortcut.
+            </p>
+
+            {syncToken ? (
+              <>
+                <div className="space-y-2">
+                  <Label>Sync Token</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={syncToken}
+                      readOnly
+                      className="font-mono text-xs"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={copyToken}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Sync Enabled</Label>
+                    <p className="text-xs text-muted-foreground">
+                      {lastSynced
+                        ? `Last synced: ${new Date(lastSynced).toLocaleString()}`
+                        : "Never synced"}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={syncActive}
+                    onCheckedChange={toggleSyncActive}
+                  />
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={generateSyncToken}
+                  disabled={generatingToken}
+                >
+                  <RefreshCw className="h-4 w-4 mr-1" />
+                  Regenerate Token
+                </Button>
+              </>
+            ) : (
+              <Button
+                onClick={generateSyncToken}
+                disabled={generatingToken}
+              >
+                {generatingToken && (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                )}
+                Generate Sync Token
+              </Button>
+            )}
+
+            <Separator />
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Setup Instructions</p>
+              <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
+                <li>Generate a sync token above</li>
+                <li>
+                  Create an Apple Shortcut that reads Health data (steps,
+                  active energy, exercise minutes, distance)
+                </li>
+                <li>
+                  Add a &quot;Get Contents of URL&quot; action that POSTs to{" "}
+                  <code className="bg-muted px-1 rounded">
+                    {typeof window !== "undefined"
+                      ? window.location.origin
+                      : ""}/api/health-sync
+                  </code>
+                </li>
+                <li>
+                  Set the Authorization header to{" "}
+                  <code className="bg-muted px-1 rounded">
+                    Bearer {"<your-token>"}
+                  </code>
+                </li>
+                <li>
+                  Run the Shortcut manually or set up an automation to run
+                  daily
+                </li>
+              </ol>
+            </div>
           </CardContent>
         </Card>
 

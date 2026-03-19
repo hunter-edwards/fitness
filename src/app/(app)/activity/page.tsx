@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Footprints, Clock, ArrowUpRight, Loader2 } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Footprints, Clock, ArrowUpRight, Loader2, Smartphone, Flame } from "lucide-react"
 import { toast } from "sonner"
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -25,6 +26,11 @@ interface ActivityEntry {
   distance_km: number | null
   flights_climbed: number | null
   notes: string | null
+  source: string | null
+  active_calories: number | null
+  workout_calories: number | null
+  heart_rate_avg: number | null
+  heart_rate_resting: number | null
 }
 
 export default function ActivityPage() {
@@ -131,7 +137,15 @@ export default function ActivityPage() {
               <span className="text-2xl font-bold">
                 {todayEntry?.steps?.toLocaleString() || "—"}
               </span>
-              <p className="text-xs text-muted-foreground">steps</p>
+              <p className="text-xs text-muted-foreground">
+                steps
+                {todayEntry?.source === "apple_health" && (
+                  <Badge variant="outline" className="ml-1.5 text-[10px] px-1 py-0">
+                    <Smartphone className="h-2.5 w-2.5 mr-0.5" />
+                    Synced
+                  </Badge>
+                )}
+              </p>
             </CardContent>
           </Card>
           <Card>
@@ -144,6 +158,34 @@ export default function ActivityPage() {
               <p className="text-xs text-muted-foreground">steps/day</p>
             </CardContent>
           </Card>
+          {todayEntry?.active_calories != null && (
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+                <CardTitle className="text-sm font-medium text-muted-foreground">Active Cal</CardTitle>
+                <Flame className="h-4 w-4 text-orange-500" />
+              </CardHeader>
+              <CardContent>
+                <span className="text-2xl font-bold">
+                  {todayEntry.active_calories.toLocaleString()}
+                </span>
+                <p className="text-xs text-muted-foreground">kcal burned</p>
+              </CardContent>
+            </Card>
+          )}
+          {todayEntry?.heart_rate_resting != null && (
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+                <CardTitle className="text-sm font-medium text-muted-foreground">Resting HR</CardTitle>
+                <Clock className="h-4 w-4 text-red-500" />
+              </CardHeader>
+              <CardContent>
+                <span className="text-2xl font-bold">
+                  {todayEntry.heart_rate_resting}
+                </span>
+                <p className="text-xs text-muted-foreground">bpm</p>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Chart */}

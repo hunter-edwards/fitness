@@ -5,14 +5,14 @@ import { usePathname } from "next/navigation"
 import {
   LayoutDashboard, Scale, UtensilsCrossed, Dumbbell,
   ClipboardList, CalendarDays, Footprints, Target,
-  TrendingUp, Settings, Activity,
+  TrendingUp, Settings, Activity, Sparkles,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const iconMap: Record<string, React.ElementType> = {
   LayoutDashboard, Scale, UtensilsCrossed, Dumbbell,
   ClipboardList, CalendarDays, Footprints, Target,
-  TrendingUp, Settings,
+  TrendingUp, Settings, Sparkles,
 }
 
 const navItems = [
@@ -21,6 +21,7 @@ const navItems = [
   { label: 'Nutrition', href: '/nutrition', icon: 'UtensilsCrossed' },
   { label: 'Workouts', href: '/workouts', icon: 'Dumbbell' },
   { label: 'Plans', href: '/plans', icon: 'ClipboardList' },
+  { label: 'AI Generate', href: '/generate', icon: 'Sparkles' },
   { label: 'Calendar', href: '/calendar', icon: 'CalendarDays' },
   { label: 'Activity', href: '/activity', icon: 'Footprints' },
   { label: 'Goals', href: '/goals', icon: 'Target' },
