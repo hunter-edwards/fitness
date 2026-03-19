@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { subDays, format } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/hooks/use-auth"
@@ -11,7 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   TrendingUp, TrendingDown, Minus, Flame, Dumbbell,
-  Zap, Brain, Loader2, Scale, UtensilsCrossed, Target,
+  Zap, Brain, Loader2, Scale, UtensilsCrossed, Target, Sparkles,
 } from "lucide-react"
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar,
@@ -204,17 +205,25 @@ export default function InsightsPage() {
             <h1 className="text-3xl font-bold">Insights</h1>
             <p className="text-muted-foreground">Analytics across all your fitness data</p>
           </div>
-          <div className="flex gap-1">
-            {TIME_RANGES.map((r) => (
-              <Button
-                key={r.days}
-                variant={range === r.days ? "default" : "outline"}
-                size="sm"
-                onClick={() => setRange(r.days)}
-              >
-                {r.label}
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1">
+              {TIME_RANGES.map((r) => (
+                <Button
+                  key={r.days}
+                  variant={range === r.days ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setRange(r.days)}
+                >
+                  {r.label}
+                </Button>
+              ))}
+            </div>
+            <Link href="/insights/reports">
+              <Button variant="outline" size="sm">
+                <Sparkles className="h-4 w-4 mr-1.5" />
+                AI Reports
               </Button>
-            ))}
+            </Link>
           </div>
         </div>
 
