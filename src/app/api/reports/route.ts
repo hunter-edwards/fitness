@@ -202,7 +202,7 @@ ${
 NUTRITION (${nutDays.length} days logged):
 - Avg daily: ${avgCal} cal, ${avgProtein}g protein, ${avgCarbs}g carbs, ${avgFat}g fat
 ${targets ? `- Targets: ${targets.calories} cal, ${targets.protein_g}g protein, ${targets.carbs_g}g carbs, ${targets.fat_g}g fat` : "- No targets set"}
-${targets && nutDays.length > 0 ? `- Calorie adherence: ${Math.round((avgCal / targets.calories) * 100)}%\n- Protein adherence: ${Math.round((avgProtein / targets.protein_g) * 100)}%` : ""}
+${targets && nutDays.length > 0 && targets.calories > 0 ? `- Calorie adherence: ${Math.round((avgCal / targets.calories) * 100)}%\n${targets.protein_g > 0 ? `- Protein adherence: ${Math.round((avgProtein / targets.protein_g) * 100)}%` : ""}` : ""}
 - Daily breakdown:
 ${nutDays.map(([date, n]) => `  ${date}: ${Math.round(n.cal)} cal, ${Math.round(n.protein)}g P`).join("\n")}
 

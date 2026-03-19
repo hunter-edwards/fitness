@@ -121,7 +121,7 @@ NUTRITION:
 - Total: ${Math.round(yCal)} cal, ${Math.round(yProtein)}g protein, ${Math.round(yCarbs)}g carbs, ${Math.round(yFat)}g fat
 - Meals logged: ${yesterdayMeals.length} (${yesterdayMeals.map((m) => m.meal_type).join(", ") || "none"})
 ${targets ? `- Targets: ${targets.calories} cal, ${targets.protein_g}g protein, ${targets.carbs_g}g carbs, ${targets.fat_g}g fat` : "- No nutrition targets set"}
-${targets ? `- Adherence: ${Math.round((yCal / targets.calories) * 100)}% calories, ${Math.round((yProtein / targets.protein_g) * 100)}% protein` : ""}
+${targets && targets.calories > 0 ? `- Adherence: ${Math.round((yCal / targets.calories) * 100)}% calories, ${targets.protein_g > 0 ? `${Math.round((yProtein / targets.protein_g) * 100)}% protein` : "N/A protein"}` : ""}
 
 WORKOUTS:
 ${

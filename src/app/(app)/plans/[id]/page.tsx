@@ -274,10 +274,9 @@ export default function PlanDetailPage() {
         .eq("status", "scheduled")
 
       if (existing && existing.length > 0) {
-        for (const w of existing) {
-          await supabase.from("workout_sets").delete().eq("workout_id", w.id)
-          await supabase.from("workouts").delete().eq("id", w.id)
-        }
+        const existingIds = existing.map((w) => w.id)
+        await supabase.from("workout_sets").delete().in("workout_id", existingIds)
+        await supabase.from("workouts").delete().in("id", existingIds)
       }
 
       for (const week of weeks) {
