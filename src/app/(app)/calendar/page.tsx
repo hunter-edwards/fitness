@@ -12,9 +12,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ChevronLeft, ChevronRight, Dumbbell, UtensilsCrossed, Scale } from "lucide-react"
+import { ChevronLeft, ChevronRight, Dumbbell, UtensilsCrossed, Scale, AlertTriangle, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { TodaysWorkout } from "@/components/workouts/todays-workout"
+import { toast } from "sonner"
 
 interface DayData {
   workouts: { name: string | null; status: string }[]
@@ -29,6 +30,8 @@ export default function CalendarPage() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null)
   const [dayMap, setDayMap] = useState<Record<string, DayData>>({})
   const [loading, setLoading] = useState(true)
+  const [duplicateCount, setDuplicateCount] = useState(0)
+  const [removing, setRemoving] = useState(false)
 
   const monthKey = format(currentMonth, "yyyy-MM")
   const monthStart = useMemo(() => startOfMonth(currentMonth), [monthKey])
@@ -93,6 +96,139 @@ export default function CalendarPage() {
     })
   }, [user, monthKey])
 
+  // Detect duplicate scheduled workouts across all plans (runs once on mount)
+  useEffect(() => {
+    if (!user) return
+    const supabase = supabaseRef.current
+
+    supabase
+      .from("workouts")
+      .select("id, date, name")
+      .eq("user_id", user.id)
+      .eq("status", "scheduled")
+      .then(({ data }) => {
+        if (!data) return
+        const groups = new Map<string, number>()
+        for (const w of data) {
+          const key = `${w.date}|${w.name}`
+          groups.set(key, (groups.get(key) || 0) + 1)
+        }
+        const dupes = Array.from(groups.values()).reduce(
+          (sum, count) => sum + Math.max(0, count - 1),
+          0
+        )
+        setDuplicateCount(dupes)
+      })
+  }, [user])
+
+  async function handleRemoveDuplicates() {
+    if (!user) return
+    setRemoving(true)
+
+    try {
+      const supabase = supabaseRef.current
+
+      const { data: scheduled } = await supabase
+        .from("workouts")
+        .select("id, date, name, created_at")
+        .eq("user_id", user.id)
+        .eq("status", "scheduled")
+        .order("created_at", { ascending: true })
+
+      if (!scheduled || scheduled.length === 0) {
+        toast.info("No scheduled workouts found")
+        return
+      }
+
+      // Group by date+name, keep the first (oldest) of each group
+      const groups = new Map<string, typeof scheduled>()
+      for (const w of scheduled) {
+        const key = `${w.date}|${w.name}`
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key)!.push(w)
+      }
+
+      const duplicateIds: string[] = []
+      for (const [, group] of groups) {
+        for (let i = 1; i < group.length; i++) {
+          duplicateIds.push(group[i].id)
+        }
+      }
+
+      if (duplicateIds.length === 0) {
+        toast.info("No duplicate workouts found")
+        return
+      }
+
+      // Batch delete
+      const { error: setsErr } = await supabase
+        .from("workout_sets")
+        .delete()
+        .in("workout_id", duplicateIds)
+      if (setsErr) throw setsErr
+
+      const { error: workoutsErr } = await supabase
+        .from("workouts")
+        .delete()
+        .in("id", duplicateIds)
+      if (workoutsErr) throw workoutsErr
+
+      toast.success(`Removed ${duplicateIds.length} duplicate workouts`)
+      setDuplicateCount(0)
+
+      // Refresh calendar data by re-triggering the month fetch
+      setDayMap({})
+      setLoading(true)
+      const from = format(monthStart, "yyyy-MM-dd")
+      const to = format(monthEnd, "yyyy-MM-dd")
+
+      const [workoutsRes, mealsRes, weightRes] = await Promise.all([
+        supabase
+          .from("workouts")
+          .select("date, name, status")
+          .eq("user_id", user.id)
+          .gte("date", from)
+          .lte("date", to),
+        supabase
+          .from("meals")
+          .select("date")
+          .eq("user_id", user.id)
+          .gte("date", from)
+          .lte("date", to),
+        supabase
+          .from("weight_entries")
+          .select("date")
+          .eq("user_id", user.id)
+          .gte("date", from)
+          .lte("date", to),
+      ])
+
+      const map: Record<string, DayData> = {}
+      const initDay = (date: string) => {
+        if (!map[date]) map[date] = { workouts: [], hasNutrition: false, hasWeight: false }
+      }
+
+      ;(workoutsRes.data || []).forEach((w: { date: string; name: string | null; status: string }) => {
+        initDay(w.date)
+        map[w.date].workouts.push({ name: w.name, status: w.status })
+      })
+
+      const nutritionDates = new Set((mealsRes.data || []).map((m: { date: string }) => m.date))
+      nutritionDates.forEach((d) => { initDay(d); map[d].hasNutrition = true })
+
+      const weightDates = new Set((weightRes.data || []).map((w: { date: string }) => w.date))
+      weightDates.forEach((d) => { initDay(d); map[d].hasWeight = true })
+
+      setDayMap(map)
+      setLoading(false)
+    } catch (err) {
+      console.error("Remove duplicates error:", err)
+      toast.error("Failed to remove duplicates")
+    } finally {
+      setRemoving(false)
+    }
+  }
+
   const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
   const selectedData = selectedKey ? dayMap[selectedKey] : null
 
@@ -109,6 +245,35 @@ export default function CalendarPage() {
             <ChevronRight className="h-5 w-5" />
           </Button>
         </div>
+
+        {/* Duplicate Warning */}
+        {duplicateCount > 0 && (
+          <Card className="border-amber-500/50 bg-amber-500/10">
+            <CardContent className="py-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-500 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium">
+                    {duplicateCount} duplicate workout{duplicateCount !== 1 ? "s" : ""} detected
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Looks like a plan was scheduled twice
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRemoveDuplicates}
+                disabled={removing}
+                className="shrink-0"
+              >
+                {removing && <Loader2 className="h-3 w-3 animate-spin mr-1.5" />}
+                Remove Duplicates
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Calendar Grid */}
         <div className="grid grid-cols-7 gap-1">
