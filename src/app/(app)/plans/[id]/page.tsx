@@ -146,16 +146,7 @@ export default function PlanDetailPage() {
         setWeeks(sorted)
       }
 
-      // Check for existing scheduled workouts from this plan
-      const { count } = await supabase
-        .from("workouts")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", user!.id)
-        .eq("plan_id", id)
-        .eq("status", "scheduled")
-      setExistingCount(count || 0)
-
-      // After fetching existing scheduled count, check for duplicates
+      // Check for existing scheduled workouts and duplicates
       const { data: scheduledForDupes } = await supabase
         .from("workouts")
         .select("id, date, name")
@@ -164,12 +155,13 @@ export default function PlanDetailPage() {
         .eq("status", "scheduled")
 
       if (scheduledForDupes) {
+        setExistingCount(scheduledForDupes.length)
         const groups = new Map<string, number>()
         for (const w of scheduledForDupes) {
           const key = `${w.date}|${w.name}`
           groups.set(key, (groups.get(key) || 0) + 1)
         }
-        const dupeCount = Array.from(groups.values()).reduce((sum, count) => sum + Math.max(0, count - 1), 0)
+        const dupeCount = Array.from(groups.values()).reduce((sum, c) => sum + Math.max(0, c - 1), 0)
         setDuplicateCount(dupeCount)
       }
 
@@ -248,10 +240,10 @@ export default function PlanDetailPage() {
       }
 
       // Delete workout_sets for duplicates first, then the workouts
-      for (const id of duplicateIds) {
-        await supabase.from("workout_sets").delete().eq("workout_id", id)
-        await supabase.from("workouts").delete().eq("id", id)
-      }
+      const { error: setsErr } = await supabase.from("workout_sets").delete().in("workout_id", duplicateIds)
+      if (setsErr) throw setsErr
+      const { error: workoutsErr } = await supabase.from("workouts").delete().in("id", duplicateIds)
+      if (workoutsErr) throw workoutsErr
 
       toast.success(`Removed ${duplicateIds.length} duplicate workouts`)
       setExistingCount((prev) => prev - duplicateIds.length)
@@ -560,21 +552,23 @@ export default function PlanDetailPage() {
                       That&apos;s more than the {totalWorkouts} workouts in this plan — looks like it was scheduled multiple times.
                     </p>
                   )}
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleRemoveDuplicates}
-                      disabled={scheduling}
-                    >
-                      {scheduling ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="mr-2 h-4 w-4" />
-                      )}
-                      Remove Duplicates
-                    </Button>
-                  </div>
+                  {duplicateCount > 0 && (
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRemoveDuplicates}
+                        disabled={scheduling}
+                      >
+                        {scheduling ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="mr-2 h-4 w-4" />
+                        )}
+                        Remove Duplicates
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
               <p className="text-sm text-muted-foreground">
